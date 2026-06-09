@@ -1,0 +1,42 @@
+# AgentGuard-X Cognitive Gateway
+# Multi-stage build — non-root, minimal final layer
+
+FROM python:3.12-slim@sha256:b3e42b5c50cbbb116ccbbb9a52862e43e0e22e0e9f9e24fec0b6798d5eb52578 AS builder
+
+WORKDIR /build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip==24.3.1 \
+    && pip install --no-cache-dir -r requirements.txt --target /install
+
+FROM python:3.12-slim@sha256:b3e42b5c50cbbb116ccbbb9a52862e43e0e22e0e9f9e24fec0b6798d5eb52578
+
+LABEL service="agentguard-gateway"
+LABEL maintainer="agentguardx@gmail.com"
+
+RUN groupadd --gid 1001 agentguard \
+    && useradd --uid 1001 --gid agentguard --no-create-home --shell /bin/sh agentguard
+
+WORKDIR /app
+
+COPY --from=builder /install /usr/local/lib/python3.12/site-packages
+COPY agentguard/ agentguard/
+
+RUN mkdir -p /app/state && chown -R agentguard:agentguard /app
+
+USER agentguard
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=20s --timeout=5s --start-period=30s --retries=3 \
+    CMD python -c "import httpx; httpx.get('http://localhost:8080/health').raise_for_status()" \
+    || exit 1
+
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+ENV TOGGLE_FILE=/app/state/.toggle_state
+
+CMD ["python", "-m", "agentguard.gateway.service"]

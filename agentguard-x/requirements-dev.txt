@@ -1,0 +1,29 @@
+# AgentGuard-X — development dependencies
+# Includes everything in requirements.txt plus test/lint tooling
+
+-r requirements.txt
+
+# Testing
+pytest==8.3.4
+pytest-asyncio==0.24.0
+pytest-cov==6.0.0
+pytest-timeout==2.3.1
+httpx==0.28.1          # already in requirements.txt; needed for TestClient
+respx==0.21.1          # mock httpx calls in tests
+
+# Linting / formatting
+ruff==0.8.4
+black==24.10.0
+mypy==1.13.0
+
+# Type stubs
+types-redis==4.6.0.20241004
+types-requests==2.32.0.20241016
+types-PyYAML==6.0.12.20241230
+
+# Security / supply chain
+pip-audit==2.7.3
+gitleaks==8.21.2
+
+# Pre-commit
+pre-commit==4.0.1

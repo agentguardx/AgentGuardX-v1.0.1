@@ -1,0 +1,39 @@
+# FinanceFlow — pinned production dependencies
+# Generated for Python 3.12
+# Run: pip install -r requirements.txt
+
+# ── LangChain ecosystem ───────────────────────────────────────────────────────
+langchain==0.3.14
+langchain-core==0.3.27
+langchain-community==0.3.14
+langchain-ollama==0.2.3
+langchain-text-splitters==0.3.4
+
+# ── LLM (Ollama) ──────────────────────────────────────────────────────────────
+ollama==0.4.4
+
+# ── Database ──────────────────────────────────────────────────────────────────
+SQLAlchemy==2.0.36
+
+# ── Web framework (exfil capture server) ──────────────────────────────────────
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+python-multipart==0.0.20
+
+# ── HTTP client ────────────────────────────────────────────────────────────────
+httpx==0.28.1
+httpcore==1.0.7
+
+# ── CLI / terminal ──────────────────────────────────────────────────────────────
+typer==0.15.1
+rich==13.9.4
+
+# ── Configuration ──────────────────────────────────────────────────────────────
+python-dotenv==1.0.1
+pydantic==2.10.3
+pydantic-settings==2.7.0
+
+# ── Utilities ──────────────────────────────────────────────────────────────────
+anyio==4.7.0
+tenacity==9.0.0
+packaging==24.2

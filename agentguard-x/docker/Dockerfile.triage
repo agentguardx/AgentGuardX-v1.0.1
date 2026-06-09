@@ -1,0 +1,42 @@
+# AgentGuard-X Triage Engine
+# Multi-stage build — non-root, minimal final layer
+
+FROM python:3.12-slim@sha256:b3e42b5c50cbbb116ccbbb9a52862e43e0e22e0e9f9e24fec0b6798d5eb52578 AS builder
+
+WORKDIR /build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc build-essential libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip==24.3.1 \
+    && pip install --no-cache-dir -r requirements.txt --target /install
+
+FROM python:3.12-slim@sha256:b3e42b5c50cbbb116ccbbb9a52862e43e0e22e0e9f9e24fec0b6798d5eb52578
+
+LABEL service="agentguard-triage"
+LABEL maintainer="agentguardx@gmail.com"
+
+RUN groupadd --gid 1001 agentguard \
+    && useradd --uid 1001 --gid agentguard --no-create-home --shell /bin/sh agentguard
+
+WORKDIR /app
+
+COPY --from=builder /install /usr/local/lib/python3.12/site-packages
+COPY agentguard/ agentguard/
+COPY policies/ policies/
+
+RUN mkdir -p /app/state && chown -R agentguard:agentguard /app
+
+USER agentguard
+
+EXPOSE 8081
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD python -c "import httpx; httpx.get('http://localhost:8081/health').raise_for_status()" \
+    || exit 1
+
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+
+CMD ["python", "-m", "agentguard.triage.service"]

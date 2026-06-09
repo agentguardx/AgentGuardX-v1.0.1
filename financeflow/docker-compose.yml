@@ -1,0 +1,66 @@
+version: "3.9"
+
+services:
+  # ── Ollama LLM server ────────────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:0.5.4
+    container_name: financeflow-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  # ── FinanceFlow exfil capture server ────────────────────────────────────────
+  financeflow-exfil:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: financeflow-exfil
+    ports:
+      - "8099:8099"
+    volumes:
+      - financeflow_data:/app/data
+    environment:
+      - EXFIL_CAPTURE_PORT=8099
+      - DATABASE_URL=sqlite:////app/data/financeflow.db
+    depends_on:
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8099/health').raise_for_status()"]
+      interval: 20s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+    command: ["python", "runner.py", "server"]
+
+  # ── FinanceFlow workflow runner ──────────────────────────────────────────────
+  financeflow-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: financeflow-runner
+    volumes:
+      - financeflow_data:/app/data
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - DATABASE_URL=sqlite:////app/data/financeflow.db
+      - EXFIL_CAPTURE_URL=http://financeflow-exfil:8099/capture
+    depends_on:
+      financeflow-exfil:
+        condition: service_healthy
+    restart: "no"
+    # Runner exits after task; orchestrated by agentguard.sh demo command
+    command: ["python", "runner.py", "seed"]
+
+volumes:
+  ollama_data:
+  financeflow_data:

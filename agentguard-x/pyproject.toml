@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=75.0", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "agentguard-x"
+version = "1.0.0"
+description = "AI agent security middleware mesh — triage, RBAC, sandbox, observability"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.12"
+readme = "README.md"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agentguard*"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "S",        # bandit (security)
+    "B",        # bugbear
+    "UP",       # pyupgrade
+    "N",        # pep8-naming
+    "A",        # flake8-builtins
+    "C4",       # flake8-comprehensions
+    "DTZ",      # flake8-datetimez
+    "T20",      # print statements
+    "SIM",      # flake8-simplify
+    "RUF",      # ruff-specific
+]
+ignore = [
+    "S101",     # allow assert in tests
+    "T201",     # allow print in runner/demo scripts
+    "S603",     # subprocess (controlled use only)
+]
+
+[tool.ruff.per-file-ignores]
+"tests/*" = ["S", "T201"]
+
+[tool.black]
+target-version = ["py312"]
+line-length = 100
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+exclude = ["tests/", "agentguard/seed/"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+timeout = 30
+markers = [
+    "unit: pure unit tests (no I/O)",
+    "integration: requires running services",
+    "golden: spec-mandated golden test cases",
+    "invariant: spec-mandated invariant tests",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["agentguard"]
+omit = ["tests/*", "agentguard/seed/*"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true

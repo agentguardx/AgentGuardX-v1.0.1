@@ -1,0 +1,175 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'agentguard-x/**'
+      - 'financeflow/**'
+      - '.github/workflows/security.yml'
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly on Mondays at 08:00 UTC
+    - cron: "0 8 * * 1"
+
+# Least-privilege default
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  codeql:
+    name: CodeQL Analysis (Python)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@babb554ede22fd5605947329c4d04d8e7a0f0cc4  # v3.27.8
+        with:
+          languages: python
+          queries: security-and-quality
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@babb554ede22fd5605947329c4d04d8e7a0f0cc4  # v3.27.8
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@babb554ede22fd5605947329c4d04d8e7a0f0cc4  # v3.27.8
+        with:
+          category: /language:python
+
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@3b139cfc5fae8b618d3eae3675e383bb1769c019  # v4.5.0
+        with:
+          fail-on-severity: high
+
+  secret-scan:
+    name: Secret Scan (gitleaks)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@44c470ffc35c34b8d9086a7e50e5578b74e11b96  # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+  pip-audit:
+    name: pip-audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b  # v5.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Audit agentguard-x dependencies
+        run: |
+          pip install pip-audit==2.7.3
+          pip-audit -r agentguard-x/requirements.txt --strict
+
+      - name: Audit financeflow dependencies
+        run: |
+          pip-audit -r financeflow/requirements.txt --strict
+
+  trivy-image-scan:
+    name: Trivy Image Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f7ce87c1d6bead3e36075b2ce75da1f6cc28aaca  # v3.9.0
+
+      - name: Build gateway image for scanning
+        uses: docker/build-push-action@67a2d409c0a876cbe6b11854e3e25193efe4e62d  # v6.12.0
+        with:
+          context: agentguard-x
+          file: agentguard-x/docker/Dockerfile.gateway
+          push: false
+          load: true
+          tags: agentguard-gateway:scan
+
+      - name: Trivy scan — gateway image
+        uses: aquasecurity/trivy-action@6e7b7d1fd3e4fef0c5fa8cce1229c54b2c9bd0d8  # v0.29.0
+        with:
+          image-ref: agentguard-gateway:scan
+          format: sarif
+          output: trivy-results.sarif
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+
+      - name: Upload Trivy SARIF
+        uses: github/codeql-action/upload-sarif@babb554ede22fd5605947329c4d04d8e7a0f0cc4  # v3.27.8
+        with:
+          sarif_file: trivy-results.sarif
+        if: always()
+
+  sbom:
+    name: Generate SBOM (CycloneDX)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@f325610c9f50a54015d37c8d16cb3b0e2c8f4de5  # v0.18.0
+
+      - name: Generate SBOM for agentguard-x
+        uses: anchore/sbom-action@f325610c9f50a54015d37c8d16cb3b0e2c8f4de5  # v0.18.0
+        with:
+          path: agentguard-x/
+          format: cyclonedx-json
+          output-file: sbom-agentguard-x.cdx.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b  # v4.5.0
+        with:
+          name: sbom
+          path: sbom-agentguard-x.cdx.json
+          retention-days: 90

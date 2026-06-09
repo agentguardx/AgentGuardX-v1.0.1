@@ -1,0 +1,76 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment secrets — NEVER commit .env
+.env
+*.env.local
+*.env.*.local
+
+# Runtime-generated CA (created by agentguard.sh up, NEVER committed)
+certs/
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+ca/
+
+# AgentGuard-X runtime state
+.capability_report
+.toggle_state
+bundles/
+
+# ML model weights (pulled at seed time, never committed)
+models/
+*.bin
+*.safetensors
+*.gguf
+*.onnx
+chroma_data/
+
+# Database
+*.db
+*.sqlite3
+data/
+
+# Logs
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Testing / coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+*.coverage
+
+# Docker
+.docker/
+
+# uv
+.python-version
+
+# Pre-commit
+.pre-commit-cache/
