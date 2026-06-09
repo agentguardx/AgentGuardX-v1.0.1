@@ -1,0 +1,42 @@
+# AgentGuard-X TLS Proxy (mitmproxy-based)
+# Phase 6: intercept, triage, block/allow outbound agent traffic.
+# Runs as non-root. CA generated at runtime into /home/mitmproxy/.mitmproxy/ (volume-mounted).
+
+FROM mitmproxy/mitmproxy:11.0.0
+
+LABEL service="agentguard-proxy"
+LABEL maintainer="agentguardx@gmail.com"
+
+USER root
+
+RUN pip install --no-cache-dir httpx==0.28.1
+
+# Copy agentguard proxy module so the addon can import it
+WORKDIR /app
+COPY agentguard/ agentguard/
+
+# mitmproxy runs as uid 1000 by default in the base image
+RUN chown -R 1000:1000 /app
+
+USER 1000
+
+# mitmproxy stores its auto-generated CA in ~/.mitmproxy/
+# That directory is volume-mounted so the CA persists across restarts
+# but is never baked into the image.
+ENV PYTHONPATH=/app
+ENV MITMPROXY_OPTIONS=""
+
+EXPOSE 8082
+
+HEALTHCHECK --interval=20s --timeout=5s --start-period=15s --retries=3 \
+    CMD python -c "import httpx; httpx.get('http://localhost:8082/healthz', timeout=3)" \
+    || python -c "import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',8082)); s.close()" \
+    || exit 1
+
+CMD ["mitmdump", \
+     "--listen-host", "0.0.0.0", \
+     "--listen-port", "8082", \
+     "--mode", "regular", \
+     "--set", "ssl_insecure=false", \
+     "--set", "upstream_cert=true", \
+     "-s", "/app/agentguard/proxy/addon.py"]

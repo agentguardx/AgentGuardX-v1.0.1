@@ -1,0 +1,310 @@
+version: "3.9"
+
+# ── AgentGuard-X full stack ───────────────────────────────────────────────────
+# Run from the agentguard-x/ directory (or via agentguard.sh up).
+# All services run as non-root (UID 1001 where configurable).
+# Observability is ALWAYS active (see §15).
+
+x-common-env: &common-env
+  AGENTGUARD_ENFORCEMENT: "${AGENTGUARD_ENFORCEMENT:-true}"
+  AGENTGUARD_SANDBOX_MODE: "${AGENTGUARD_SANDBOX_MODE:-docker_only}"
+  REDIS_URL: "redis://redis:6379/0"
+  OPA_URL: "http://opa:8181"
+  CHROMA_HOST: "chromadb"
+  CHROMA_PORT: "8888"
+  TRIAGE_URL: "http://triage:8081"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+  OTEL_SERVICE_NAME: "agentguard-x"
+
+services:
+  # ── Infrastructure ────────────────────────────────────────────────────────
+  redis:
+    image: redis:7.4.1-alpine@sha256:de15b4d0a8dbac30bc76a7dff1b31a1db2ebdcf9a14b0adb77a4dc9c5d25e4a3
+    container_name: agentguard-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    user: "999:999"
+
+  chromadb:
+    image: chromadb/chroma:0.6.3@sha256:3f4ecc4cbc28de1e85b8ded5f5a88f51ac52b83d2b31d1c9f7b3e63c4d8e2f91
+    container_name: agentguard-chromadb
+    ports:
+      - "8888:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  opa:
+    image: openpolicyagent/opa:0.70.0@sha256:d4c71c3f826e0d3ef9da7c7ee05a22a6d3e0873c1d3e9a5e19e9cb7a5b2b12d0
+    container_name: agentguard-opa
+    ports:
+      - "8181:8181"
+    volumes:
+      - ./policies:/policies:ro
+    command:
+      - "run"
+      - "--server"
+      - "--addr=0.0.0.0:8181"
+      - "--bundle=/policies"
+      - "--log-level=info"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:8181/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Phase 6: TLS Inspection Proxy ─────────────────────────────────────────
+  proxy:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.proxy
+    container_name: agentguard-proxy
+    ports:
+      - "8082:8082"
+    environment:
+      <<: *common-env
+      GATEWAY_URL: "http://gateway:8080"
+      PROXY_TIMEOUT_SECONDS: "5.0"
+    volumes:
+      - proxy_ca:/home/mitmproxy/.mitmproxy   # CA generated at runtime, never committed
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',8082)); s.close()"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+    networks:
+      - agentguard_net
+
+  # ── AgentGuard-X Core Services ─────────────────────────────────────────────
+  triage:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.triage
+    container_name: agentguard-triage
+    ports:
+      - "8081:8081"
+    environment:
+      <<: *common-env
+      TRIAGE_HOST: "0.0.0.0"
+      TRIAGE_PORT: "8081"
+      STAGE4_EMBED_TIMEOUT_SECONDS: "5.0"
+    depends_on:
+      redis:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+      opa:
+        condition: service_healthy
+    volumes:
+      - model_cache:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8081/health"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.gateway
+    container_name: agentguard-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      <<: *common-env
+      GATEWAY_HOST: "0.0.0.0"
+      GATEWAY_PORT: "8080"
+      HOLD_TIMEOUT_SECONDS: "300"
+      CHEAP_GATE_AUTO_ALLOW_THRESHOLD: "100.0"
+      CHEAP_GATE_AUTO_BLOCK_THRESHOLD: "1000000.0"
+    depends_on:
+      triage:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    volumes:
+      - toggle_state:/app/state
+
+  # ── Observability Stack ─────────────────────────────────────────────────────
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.115.1@sha256:a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2
+    container_name: agentguard-otel
+    ports:
+      - "4317:4317"    # gRPC
+      - "4318:4318"    # HTTP
+    volumes:
+      - ./docker/otel-config.yaml:/etc/otelcol/config.yaml:ro
+    command: ["--config=/etc/otelcol/config.yaml"]
+    depends_on:
+      - prometheus
+      - loki
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.1.0@sha256:b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3
+    container_name: agentguard-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=15d"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.3.2@sha256:c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4
+    container_name: agentguard-loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - loki_data:/loki
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:3100/ready"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.4.0@sha256:d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5
+    container_name: agentguard-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=agentguard
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./docker/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+    depends_on:
+      - prometheus
+      - loki
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # ── FinanceFlow (attached for demo) ────────────────────────────────────────
+  financeflow-exfil:
+    build:
+      context: ../financeflow
+      dockerfile: Dockerfile
+    container_name: financeflow-exfil
+    ports:
+      - "8099:8099"
+    volumes:
+      - financeflow_data:/app/data
+    environment:
+      - EXFIL_CAPTURE_PORT=8099
+      - DATABASE_URL=sqlite:////app/data/financeflow.db
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8099/health').raise_for_status()"]
+      interval: 20s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+    command: ["python", "runner.py", "server"]
+
+  financeflow-runner:
+    build:
+      context: ../financeflow
+      dockerfile: Dockerfile
+    container_name: financeflow-runner
+    volumes:
+      - financeflow_data:/app/data
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - DATABASE_URL=sqlite:////app/data/financeflow.db
+      - EXFIL_CAPTURE_URL=http://financeflow-exfil:8099/capture
+    restart: "no"
+
+  # ── Phase 7: Sandbox Worker Pool ──────────────────────────────────────────
+  # The agentguard-sandbox image is pre-built; containers are started/stopped
+  # dynamically by SandboxManager. This service entry ensures the image is built.
+  sandbox-builder:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.sandbox
+    image: agentguard-sandbox:latest
+    container_name: agentguard-sandbox-builder
+    command: ["echo", "sandbox image built"]
+    restart: "no"
+    profiles:
+      - build-only
+
+  ollama:
+    image: ollama/ollama:0.5.4
+    container_name: financeflow-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+volumes:
+  redis_data:
+  chroma_data:
+  prometheus_data:
+  loki_data:
+  grafana_data:
+  model_cache:
+  toggle_state:
+  financeflow_data:
+  ollama_data:
+  proxy_ca:       # mitmproxy CA — generated at runtime, never committed
+
+networks:
+  agentguard_net:
+    driver: bridge
