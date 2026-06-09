@@ -373,15 +373,18 @@ cmd_toggle() {
 # ── cmd: attack ──────────────────────────────────────────────────────────────
 cmd_attack() {
     log_section "Attack Suite"
-    log_info "Running attack scenarios against FinanceFlow..."
+    log_info "Running scripted attack scenarios against FinanceFlow..."
+    # demo.py exercises all scripted attacks through AgentGuardGatewayCallback.
+    # Enforcement state is read from AGENTGUARD_ENFORCEMENT env var in container.
     docker compose -f "${COMPOSE_FILE}" exec financeflow-runner \
-        python runner.py attack --all --report
+        python /app/integration/demo.py
 }
 
 # ── cmd: demo ────────────────────────────────────────────────────────────────
 cmd_demo() {
     log_section "AgentGuard-X Full Demo — Before / After"
 
+    # ── Phase 1: Enforcement OFF ──────────────────────────────────────────────
     echo -e "${BOLD}${RED}"
     echo "  ████████████████████████████████████████████████████████"
     echo "  ██         PHASE 1: ENFORCEMENT OFF                   ██"
@@ -392,13 +395,17 @@ cmd_demo() {
     cmd_toggle "" "off"
     sleep 2
 
-    log_info "Running attack suite with enforcement OFF..."
-    cmd_attack
-    log_warn "Attacks executed. Open Grafana (http://localhost:3000) to see red dashboards."
+    log_info "Running scripted attack suite with enforcement OFF..."
+    docker compose -f "${COMPOSE_FILE}" exec financeflow-runner \
+        python /app/integration/demo.py --enforcement off || true
+
+    log_warn "Attacks executed — observability active, enforcement off."
+    log_warn "Open Grafana (http://localhost:3000) to see traffic in dashboards."
     echo ""
     echo -e "${YELLOW}Press ENTER to continue to Phase 2 (enforcement ON)...${NC}"
     read -r
 
+    # ── Phase 2: Enforcement ON ───────────────────────────────────────────────
     echo -e "${BOLD}${GREEN}"
     echo "  ████████████████████████████████████████████████████████"
     echo "  ██         PHASE 2: ENFORCEMENT ON                    ██"
@@ -409,11 +416,14 @@ cmd_demo() {
     cmd_toggle "" "on"
     sleep 2
 
-    log_info "Running attack suite with enforcement ON..."
-    cmd_attack
-    log_ok "Attacks blocked/held. Check dashboards for sandbox routing and hold queue."
-    log_info "Analyst hold queue: http://localhost:8083"
-    log_info "Grafana threat view: http://localhost:3000/d/agentguard-threats"
+    log_info "Running scripted attack suite with enforcement ON..."
+    docker compose -f "${COMPOSE_FILE}" exec financeflow-runner \
+        python /app/integration/demo.py --enforcement on || true
+
+    log_ok "Attacks blocked/held by AgentGuard-X."
+    log_info "  Analyst hold queue : http://localhost:8083"
+    log_info "  Grafana threat view: http://localhost:3000/d/agentguard-threats"
+    log_info "  Gateway health     : http://localhost:8080/health"
 }
 
 # ── cmd: status ──────────────────────────────────────────────────────────────

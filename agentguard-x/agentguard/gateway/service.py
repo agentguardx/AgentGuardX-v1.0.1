@@ -192,6 +192,34 @@ async def proxy_check(req: ProxyCheckRequest) -> JSONResponse:
     })
 
 
+class PosthookScanRequest(BaseModel):
+    """Request from the thin gateway callback (Phase 11 integration)."""
+    output: str
+    tool_name: str
+    agent_id: str = "unknown"
+    session_id: str = "unknown"
+
+
+@app.post("/v1/posthook/scan")
+async def posthook_scan(req: PosthookScanRequest) -> JSONResponse:
+    """Post-execution output scan called by AgentGuardGatewayCallback.
+
+    Runs PostHookProcessor (regex credential scan + injection detection)
+    on the tool output inside the gateway process — no heavy deps in the
+    FinanceFlow container.
+    """
+    from agentguard.gateway.post_hook import PostHookProcessor
+
+    proc = PostHookProcessor()
+    scan = proc.scan(req.output, req.tool_name)
+    return JSONResponse({
+        "clean": scan.clean,
+        "quarantined": scan.quarantined,
+        "findings": scan.findings,
+        "sanitized_output": scan.sanitized_output,
+    })
+
+
 @app.get("/health")
 async def health() -> Response:
     return Response(content="ok", media_type="text/plain")

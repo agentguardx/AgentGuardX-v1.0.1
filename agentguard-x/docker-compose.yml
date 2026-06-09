@@ -97,6 +97,7 @@ services:
       start_period: 15s
     restart: unless-stopped
     networks:
+      - default        # must reach gateway on default network
       - agentguard_net
 
   # ── AgentGuard-X Core Services ─────────────────────────────────────────────
@@ -282,11 +283,37 @@ services:
     container_name: financeflow-runner
     volumes:
       - financeflow_data:/app/data
+      - ./integration:/app/integration:ro   # AgentGuard-X thin callback — read-only mount
+      - ./certs:/app/certs:ro               # mitmproxy CA for TLS inspection
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
       - DATABASE_URL=sqlite:////app/data/financeflow.db
       - EXFIL_CAPTURE_URL=http://financeflow-exfil:8099/capture
+      # ── AgentGuard-X integration (Phase 11) ──────────────────────────────
+      - AGENTGUARD_ENABLED=true
+      - AGENTGUARD_ENFORCEMENT=${AGENTGUARD_ENFORCEMENT:-true}
+      - GATEWAY_URL=http://gateway:8080
+      - ANALYST_URL=http://analyst:8083
+      # Outbound HTTP via mitmproxy TLS inspection proxy
+      - HTTP_PROXY=http://proxy:8082
+      - HTTPS_PROXY=http://proxy:8082
+      # Trust the mitmproxy CA cert for TLS interception
+      - SSL_CERT_FILE=/app/certs/mitmproxy-ca-cert.pem
+      - REQUESTS_CA_BUNDLE=/app/certs/mitmproxy-ca-cert.pem
+    depends_on:
+      gateway:
+        condition: service_healthy
+      proxy:
+        condition: service_healthy
+      financeflow-exfil:
+        condition: service_healthy
+    # Keep container alive for 'docker compose exec' attack and demo commands.
+    # runner_wrapper.py is exec'd directly; no server process needed here.
+    command: ["python", "-u", "-c", "import signal; signal.pause()"]
     restart: "no"
+    networks:
+      - default        # reaches gateway, triage, redis, etc.
+      - agentguard_net # reaches proxy for HTTP_PROXY routing
 
   # ── Phase 7: Sandbox Worker Pool ──────────────────────────────────────────
   # The agentguard-sandbox image is pre-built; containers are started/stopped
