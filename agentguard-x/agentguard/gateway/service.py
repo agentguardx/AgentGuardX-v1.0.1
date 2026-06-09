@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import datetime
 import os
+from collections import deque
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
@@ -12,6 +14,16 @@ from pydantic import BaseModel
 
 from agentguard.observability.telemetry import setup_telemetry
 from agentguard.toggle import enforcement_is_on, set_enforcement
+
+# In-memory ring buffer of recent triage decisions (last 200).
+# Written by /check, /v1/proxy/check, and /v1/posthook/scan handlers.
+# Read by GET /admin/status for the web UI live feed.
+_decisions: deque = deque(maxlen=200)
+
+
+def _record(entry: dict) -> None:
+    entry.setdefault("ts", datetime.datetime.utcnow().isoformat() + "Z")
+    _decisions.appendleft(entry)
 
 
 @asynccontextmanager
@@ -101,6 +113,18 @@ async def gateway_check(req: GatewayRequest) -> JSONResponse:
     verdict = triage_result.get("verdict", "allow")
     blocked = verdict in ("block", "block_short_circuit", "block_stage1")
 
+    _record({
+        "type": "pre_hook",
+        "agent_id": req.agent_id,
+        "agent_role": req.agent_role,
+        "tool_name": req.tool_name,
+        "verdict": verdict,
+        "r": triage_result.get("r"),
+        "route": triage_result.get("route"),
+        "block_reason": triage_result.get("block_reason"),
+        "enforcement": enforcement,
+    })
+
     if blocked and enforcement:
         return JSONResponse(
             status_code=403,
@@ -181,6 +205,18 @@ async def proxy_check(req: ProxyCheckRequest) -> JSONResponse:
     blocked = verdict in ("block", "block_short_circuit", "block_stage1")
 
     action = "block" if (blocked and enforcement) else "allow"
+
+    _record({
+        "type": "proxy",
+        "agent_id": req.agent_id,
+        "agent_role": req.agent_role,
+        "tool_name": req.tool_name,
+        "verdict": verdict,
+        "r": triage_result.get("r"),
+        "block_reason": triage_result.get("block_reason") if blocked else None,
+        "enforcement": enforcement,
+    })
+
     return JSONResponse(content={
         "action": action,
         "verdict": verdict,
@@ -212,6 +248,19 @@ async def posthook_scan(req: PosthookScanRequest) -> JSONResponse:
 
     proc = PostHookProcessor()
     scan = proc.scan(req.output, req.tool_name)
+
+    _record({
+        "type": "post_hook",
+        "agent_id": req.agent_id,
+        "tool_name": req.tool_name,
+        "verdict": "quarantined" if scan.quarantined else "clean",
+        "clean": scan.clean,
+        "quarantined": scan.quarantined,
+        "findings": scan.findings,
+        "r": None,
+        "enforcement": enforcement_is_on(),
+    })
+
     return JSONResponse({
         "clean": scan.clean,
         "quarantined": scan.quarantined,
@@ -223,6 +272,15 @@ async def posthook_scan(req: PosthookScanRequest) -> JSONResponse:
 @app.get("/health")
 async def health() -> Response:
     return Response(content="ok", media_type="text/plain")
+
+
+@app.get("/admin/status")
+async def admin_status() -> JSONResponse:
+    """Returns enforcement state and recent triage decisions for the web UI."""
+    return JSONResponse({
+        "enforcement": enforcement_is_on(),
+        "recent_decisions": list(_decisions)[:100],
+    })
 
 
 @app.post("/admin/toggle")

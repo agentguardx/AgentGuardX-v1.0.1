@@ -1,0 +1,20 @@
+# AgentGuard-X Triage — ML additions
+# Installed alongside requirements.txt in Dockerfile.triage only.
+# Gateway and analyst do NOT install these.
+
+# Pin numpy to 1.x — torch, spacy, and chromadb all work on 1.x;
+# numpy 2.x compatibility across all three simultaneously is not guaranteed.
+numpy>=1.24.0,<2.0
+
+# ChromaDB vector store (Stage 4 RAG)
+chromadb>=0.6.0
+
+# Sentence transformers for embeddings (all-MiniLM-L6-v2, CPU)
+# torch is a transitive dep — letting sentence-transformers pick the compatible
+# version avoids the torch/torchvision version-lock conflict.
+sentence-transformers>=2.7.0
+
+# PII scanning (Stage 4 post-hook)
+# spacy is a transitive dep of presidio — letting it pick avoids spacy version issues.
+presidio-analyzer>=2.2.350
+presidio-anonymizer>=2.2.350

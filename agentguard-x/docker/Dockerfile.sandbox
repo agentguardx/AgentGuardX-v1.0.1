@@ -4,7 +4,7 @@
 # Network mode: none (isolated by manager at runtime).
 # Non-root. Read-only filesystem option depends on tier.
 
-FROM python:3.12-slim@sha256:b3e42b5c50cbbb116ccbbb9a52862e43e0e22e0e9f9e24fec0b6798d5eb52578 AS builder
+FROM python:3.12-slim AS builder
 
 WORKDIR /build
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -16,7 +16,7 @@ COPY ../financeflow/requirements.txt ./financeflow-requirements.txt
 RUN pip install --no-cache-dir --upgrade pip==24.3.1 \
     && pip install --no-cache-dir -r financeflow-requirements.txt --target /install
 
-FROM python:3.12-slim@sha256:b3e42b5c50cbbb116ccbbb9a52862e43e0e22e0e9f9e24fec0b6798d5eb52578
+FROM python:3.12-slim
 
 LABEL service="agentguard-sandbox-worker"
 LABEL maintainer="agentguardx@gmail.com"

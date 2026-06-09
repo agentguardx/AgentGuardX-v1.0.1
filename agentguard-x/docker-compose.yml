@@ -19,7 +19,7 @@ x-common-env: &common-env
 services:
   # ── Infrastructure ────────────────────────────────────────────────────────
   redis:
-    image: redis:7.4.1-alpine@sha256:de15b4d0a8dbac30bc76a7dff1b31a1db2ebdcf9a14b0adb77a4dc9c5d25e4a3
+    image: redis:7.4.1-alpine
     container_name: agentguard-redis
     ports:
       - "6379:6379"
@@ -35,7 +35,7 @@ services:
     user: "999:999"
 
   chromadb:
-    image: chromadb/chroma:0.6.3@sha256:3f4ecc4cbc28de1e85b8ded5f5a88f51ac52b83d2b31d1c9f7b3e63c4d8e2f91
+    image: chromadb/chroma:0.6.3
     container_name: agentguard-chromadb
     ports:
       - "8888:8000"
@@ -53,7 +53,7 @@ services:
     restart: unless-stopped
 
   opa:
-    image: openpolicyagent/opa:0.70.0@sha256:d4c71c3f826e0d3ef9da7c7ee05a22a6d3e0873c1d3e9a5e19e9cb7a5b2b12d0
+    image: openpolicyagent/opa:0.70.0
     container_name: agentguard-opa
     ports:
       - "8181:8181"
@@ -63,13 +63,14 @@ services:
       - "run"
       - "--server"
       - "--addr=0.0.0.0:8181"
-      - "--bundle=/policies"
       - "--log-level=info"
+      - "/policies"
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:8181/health"]
+      test: ["CMD", "/opa", "check", "/policies"]
       interval: 15s
       timeout: 5s
       retries: 5
+      start_period: 10s
     restart: unless-stopped
 
   # ── Phase 6: TLS Inspection Proxy ─────────────────────────────────────────
@@ -90,11 +91,11 @@ services:
       gateway:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',8082)); s.close()"]
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(3); s.connect(('127.0.0.1',8082)); s.close()"]
       interval: 15s
       timeout: 5s
       retries: 5
-      start_period: 15s
+      start_period: 30s
     restart: unless-stopped
     networks:
       - default        # must reach gateway on default network
@@ -123,7 +124,7 @@ services:
     volumes:
       - model_cache:/root/.cache/huggingface
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8081/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8081/health')"]
       interval: 20s
       timeout: 10s
       retries: 5
@@ -145,7 +146,7 @@ services:
     depends_on:
       - redis
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8083/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8083/health')"]
       interval: 20s
       timeout: 5s
       retries: 5
@@ -171,7 +172,7 @@ services:
       triage:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
       interval: 20s
       timeout: 5s
       retries: 5
@@ -182,7 +183,7 @@ services:
 
   # ── Observability Stack ─────────────────────────────────────────────────────
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.115.1@sha256:a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2
+    image: otel/opentelemetry-collector-contrib:0.115.1
     container_name: agentguard-otel
     ports:
       - "4317:4317"    # gRPC
@@ -196,7 +197,7 @@ services:
     restart: unless-stopped
 
   prometheus:
-    image: prom/prometheus:v3.1.0@sha256:b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3
+    image: prom/prometheus:v3.1.0
     container_name: agentguard-prometheus
     ports:
       - "9090:9090"
@@ -214,7 +215,7 @@ services:
     restart: unless-stopped
 
   loki:
-    image: grafana/loki:3.3.2@sha256:c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4
+    image: grafana/loki:3.3.2
     container_name: agentguard-loki
     ports:
       - "3100:3100"
@@ -230,7 +231,7 @@ services:
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:11.4.0@sha256:d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5
+    image: grafana/grafana:11.4.0
     container_name: agentguard-grafana
     ports:
       - "3000:3000"
@@ -274,7 +275,42 @@ services:
       retries: 3
       start_period: 15s
     restart: unless-stopped
-    command: ["python", "runner.py", "server"]
+    command: ["python", "-m", "financeflow.runner", "server"]
+
+  # ── FinanceFlow Web UI ────────────────────────────────────────────────────────
+  financeflow-web:
+    build:
+      context: ../financeflow
+      dockerfile: Dockerfile
+    container_name: financeflow-web
+    ports:
+      - "8100:8100"
+    volumes:
+      - financeflow_data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock  # log streaming
+    environment:
+      - DATABASE_URL=sqlite:////app/data/financeflow.db
+      - GATEWAY_URL=http://gateway:8080
+      - TRIAGE_URL=http://triage:8081
+      - ANALYST_URL=http://analyst:8083
+      - PROMETHEUS_URL=http://prometheus:9090
+      - WEB_PORT=8100
+    user: root  # required for docker socket read access
+    depends_on:
+      gateway:
+        condition: service_healthy
+      financeflow-exfil:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8100/api/accounts').raise_for_status()"]
+      interval: 20s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    command: ["python", "-m", "financeflow.web.app"]
+    restart: unless-stopped
+    networks:
+      - default
 
   financeflow-runner:
     build:
@@ -337,7 +373,7 @@ services:
     volumes:
       - ollama_data:/root/.ollama
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:11434/api/tags"]
+      test: ["CMD", "ollama", "list"]
       interval: 30s
       timeout: 10s
       retries: 5

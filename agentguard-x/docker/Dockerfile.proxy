@@ -15,23 +15,23 @@ RUN pip install --no-cache-dir httpx==0.28.1
 WORKDIR /app
 COPY agentguard/ agentguard/
 
-# mitmproxy runs as uid 1000 by default in the base image
-RUN chown -R 1000:1000 /app
+# Pre-create the CA directory owned by mitmproxy (UID 1000).
+# Docker copies this into the named volume on first mount, so mitmdump
+# can write its auto-generated CA cert without needing root or gosu.
+RUN mkdir -p /home/mitmproxy/.mitmproxy \
+    && chown -R mitmproxy:mitmproxy /home/mitmproxy \
+    && chown -R 1000:1000 /app
 
-USER 1000
+# Bypass the base image's docker-entrypoint.sh which calls gosu for
+# privilege-dropping — gosu's setuid() is blocked by Docker Desktop's
+# default seccomp profile on Windows/WSL2.  Run mitmdump directly.
+ENTRYPOINT []
+USER mitmproxy
 
-# mitmproxy stores its auto-generated CA in ~/.mitmproxy/
-# That directory is volume-mounted so the CA persists across restarts
-# but is never baked into the image.
 ENV PYTHONPATH=/app
 ENV MITMPROXY_OPTIONS=""
 
 EXPOSE 8082
-
-HEALTHCHECK --interval=20s --timeout=5s --start-period=15s --retries=3 \
-    CMD python -c "import httpx; httpx.get('http://localhost:8082/healthz', timeout=3)" \
-    || python -c "import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',8082)); s.close()" \
-    || exit 1
 
 CMD ["mitmdump", \
      "--listen-host", "0.0.0.0", \

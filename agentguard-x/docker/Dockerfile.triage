@@ -1,18 +1,18 @@
 # AgentGuard-X Triage Engine
 # Multi-stage build — non-root, minimal final layer
 
-FROM python:3.12-slim@sha256:b3e42b5c50cbbb116ccbbb9a52862e43e0e22e0e9f9e24fec0b6798d5eb52578 AS builder
+FROM python:3.12-slim AS builder
 
 WORKDIR /build
 RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc build-essential libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY requirements.txt requirements-triage.txt ./
 RUN pip install --no-cache-dir --upgrade pip==24.3.1 \
-    && pip install --no-cache-dir -r requirements.txt --target /install
+    && pip install --no-cache-dir -r requirements.txt -r requirements-triage.txt --target /install
 
-FROM python:3.12-slim@sha256:b3e42b5c50cbbb116ccbbb9a52862e43e0e22e0e9f9e24fec0b6798d5eb52578
+FROM python:3.12-slim
 
 LABEL service="agentguard-triage"
 LABEL maintainer="agentguardx@gmail.com"

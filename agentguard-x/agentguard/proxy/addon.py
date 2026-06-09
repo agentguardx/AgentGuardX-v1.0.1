@@ -25,8 +25,8 @@ import httpx
 from mitmproxy import http
 from mitmproxy.script import concurrent
 
-from .a2a_parser import parse_envelope
-from .domain_allowlist import check_domain
+from agentguard.proxy.a2a_parser import parse_envelope
+from agentguard.proxy.domain_allowlist import check_domain
 
 logger = logging.getLogger("agentguard.proxy")
 logging.basicConfig(

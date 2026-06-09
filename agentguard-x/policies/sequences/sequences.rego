@@ -8,56 +8,52 @@ import future.keywords.in
 # These are SOFT SIGNALS (score contributors) not hard gates.
 # Hard gates live in Stage 1; sequences feed Stage 3 soft scoring.
 
-# Known kill chains: [early tools ...] → final dangerous tool
 kill_chains := [
     ["read_customer_pii_tool", "compress_data_tool", "post_external_tool"],
     ["get_account_tool", "read_customer_pii_tool", "post_external_tool"],
     ["run_report_tool", "compress_data_tool", "post_external_tool"],
 ]
 
-# Blocked sequences: certain tool orders are always violations
 blocked_sequences := [
-    ["execute_code_tool", "post_external_tool"],   # code then exfil
+    ["execute_code_tool", "post_external_tool"],
 ]
 
-# ── Decision ──────────────────────────────────────────────────────────────────
+# ── Decisions ─────────────────────────────────────────────────────────────────
 default kill_chain_detected := false
 
 kill_chain_detected if {
     some chain in kill_chains
-    sequence_present(input.session_tools, chain)
+    _subseq3(input.session_tools, chain[0], chain[1], chain[2])
 }
 
 default blocked_sequence := false
 
 blocked_sequence if {
     some seq in blocked_sequences
-    sequence_present(input.session_tools, seq)
+    _subseq2(input.session_tools, seq[0], seq[1])
 }
 
-# Risk score contribution from sequences
-sequence_risk_score := 0.90 if { kill_chain_detected } else :=
-                       0.80 if { blocked_sequence } else := 0.0
+sequence_risk_score := 0.90 if { kill_chain_detected }
+else := 0.80 if { blocked_sequence }
+else := 0.0
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-# Check if needle_seq appears as subsequence in haystack
-sequence_present(haystack, needle_seq) if {
-    count(needle_seq) > 0
-    _subsequence_idx(haystack, needle_seq, 0, 0)
+# ── Non-recursive subsequence helpers ─────────────────────────────────────────
+# OPA forbids recursion (Datalog guarantee of termination).
+# Existential index search over the session_tools array achieves the same
+# result: find indices i < j (< k) where elements match the pattern in order.
+
+_subseq2(haystack, a, b) if {
+    some i, j
+    haystack[i] == a
+    haystack[j] == b
+    i < j
 }
 
-_subsequence_idx(haystack, needle, hi, ni) if {
-    ni >= count(needle)
-}
-
-_subsequence_idx(haystack, needle, hi, ni) if {
-    hi < count(haystack)
-    haystack[hi] == needle[ni]
-    _subsequence_idx(haystack, needle, hi + 1, ni + 1)
-}
-
-_subsequence_idx(haystack, needle, hi, ni) if {
-    hi < count(haystack)
-    haystack[hi] != needle[ni]
-    _subsequence_idx(haystack, needle, hi + 1, ni)
+_subseq3(haystack, a, b, c) if {
+    some i, j, k
+    haystack[i] == a
+    haystack[j] == b
+    haystack[k] == c
+    i < j
+    j < k
 }
