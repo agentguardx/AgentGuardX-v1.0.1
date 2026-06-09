@@ -13,6 +13,15 @@ scrape_configs:
       - targets: ['triage:8081']
     metrics_path: /metrics
 
+  - job_name: agentguard-analyst
+    static_configs:
+      - targets: ['analyst:8083']
+    metrics_path: /metrics
+
+  - job_name: otel-collector
+    static_configs:
+      - targets: ['otel-collector:8889']
+
   - job_name: redis
     static_configs:
       - targets: ['redis:6379']

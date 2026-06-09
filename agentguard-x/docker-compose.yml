@@ -129,6 +129,29 @@ services:
       start_period: 60s
     restart: unless-stopped
 
+  # ── Phase 10: Analyst Hold Queue UI ──────────────────────────────────────
+  analyst:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.gateway   # same base image (Python + FastAPI)
+    container_name: agentguard-analyst
+    ports:
+      - "8083:8083"
+    environment:
+      <<: *common-env
+      ANALYST_HOST: "0.0.0.0"
+      ANALYST_PORT: "8083"
+    depends_on:
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8083/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    command: ["python", "-m", "agentguard.analyst.service"]
+
   gateway:
     build:
       context: .
@@ -216,7 +239,8 @@ services:
       - GF_USERS_ALLOW_SIGN_UP=false
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./dashboards:/var/lib/grafana/dashboards:ro
+      - ./docker/grafana-dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml:ro
       - ./docker/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
     depends_on:
       - prometheus

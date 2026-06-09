@@ -188,24 +188,47 @@ class AgentGuardCallbackHandler(BaseCallbackHandler):
     def _trigger_hold(self, tool_name: str, result) -> None:
         """Synchronous hold for irreversible operations.
 
+        Posts to the analyst queue (fire-and-forget) then raises PermissionError.
         Hold timeout → BLOCK (fail-closed). NEVER allow-on-timeout.
         """
         hold_timeout = int(os.getenv("HOLD_TIMEOUT_SECONDS", "300"))
+        analyst_url = os.getenv("ANALYST_URL", "http://localhost:8083")
+
         logger.warning(
             "agentguard.hold_triggered",
             extra={
                 "tool": tool_name,
                 "r": result.r,
                 "timeout_s": hold_timeout,
+                "analyst_url": analyst_url,
             },
         )
-        # In the full stack, this would POST to the analyst queue and block.
-        # In the PoC this raises immediately with a hold message.
+
+        # Register the hold in the analyst queue (best-effort, non-blocking)
+        try:
+            import httpx
+            httpx.post(
+                f"{analyst_url}/holds",
+                json={
+                    "agent_id": self._agent_id,
+                    "agent_role": self._agent_role,
+                    "tool_name": tool_name,
+                    "r_score": result.r,
+                    "session_id": self._session_id,
+                    "raw_payload": f"tool={tool_name} r={result.r:.3f}",
+                    "timeout_seconds": hold_timeout,
+                },
+                timeout=2.0,
+            )
+        except Exception as e:
+            logger.debug("Analyst queue unreachable (non-fatal): %s", e)
+
+        # Always raise — the PoC does not wait for analyst approval
         raise PermissionError(
             f"[AgentGuard-X] HELD: irreversible operation '{tool_name}' "
             f"(R={result.r:.3f}) queued for analyst review. "
             f"Timeout in {hold_timeout}s → BLOCK (fail-closed). "
-            f"Analyst queue: http://localhost:8083"
+            f"Review at: {analyst_url}"
         )
 
     def _build_stage_input(self, tool_name: str, input_str: str) -> Any:

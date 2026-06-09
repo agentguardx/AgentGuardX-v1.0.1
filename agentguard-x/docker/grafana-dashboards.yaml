@@ -1,0 +1,13 @@
+apiVersion: 1
+
+providers:
+  - name: AgentGuardX
+    orgId: 1
+    folder: AgentGuard-X
+    folderUid: agentguardx
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards

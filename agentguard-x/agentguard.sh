@@ -273,6 +273,7 @@ cmd_up() {
     wait_healthy "OPA"         "http://localhost:8181/health" 60
     wait_healthy "Triage"      "http://localhost:8081/health" 90
     wait_healthy "Gateway"     "http://localhost:8080/health" 90
+    wait_healthy "Analyst"     "http://localhost:8083/health" 60
     wait_healthy "Prometheus"  "http://localhost:9090/-/healthy" 60
     wait_healthy "Grafana"     "http://localhost:3000/api/health" 90
     wait_healthy "Loki"        "http://localhost:3100/ready" 60
