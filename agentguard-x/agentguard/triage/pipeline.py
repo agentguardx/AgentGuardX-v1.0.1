@@ -72,6 +72,9 @@ class TriagePipeline:
         # Wait for S2 first (needed for short-circuit check)
         s2_output = await tasks["s2"]
         s2_score = s2_output.score if s2_output.available else None
+        # Detection attribution from Stage 2's winning detector (Phase 5).
+        s2_cat = s2_output.metadata.get("detection_category")
+        s2_reason = s2_output.metadata.get("detection_reason")
 
         # Short-circuit check: if S2 is certain, cancel remaining
         from agentguard.scoring.engine import SHORT_CIRCUIT_THRESHOLD
@@ -87,6 +90,8 @@ class TriagePipeline:
             result = self._engine.score(
                 scores, reversibility=reversibility, isolation_floor=isolation_floor
             )
+            result.detection_category = s2_cat
+            result.detection_reason = s2_reason
             result.latency_ms = (time.monotonic() - t0) * 1000
             return result
 
@@ -112,5 +117,7 @@ class TriagePipeline:
         result = self._engine.score(
             scores, reversibility=reversibility, isolation_floor=isolation_floor
         )
+        result.detection_category = s2_cat
+        result.detection_reason = s2_reason
         result.latency_ms = (time.monotonic() - t0) * 1000
         return result

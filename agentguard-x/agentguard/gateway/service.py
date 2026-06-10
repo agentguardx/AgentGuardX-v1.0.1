@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
+import json
+import logging
 import os
 from collections import deque
 from contextlib import asynccontextmanager
@@ -11,9 +14,40 @@ from typing import Any, Optional
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from prometheus_client import Counter, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST, REGISTRY
 
 from agentguard.observability.telemetry import setup_telemetry
 from agentguard.toggle import enforcement_is_on, set_enforcement
+
+# ── Prometheus metrics ────────────────────────────────────────────────────────
+_prom_requests = Counter(
+    "agentguard_requests_total",
+    "Total triage requests processed",
+    ["verdict", "route", "agent_role"],
+)
+_prom_blocks = Counter(
+    "agentguard_blocks_total",
+    "Total blocked requests",
+    ["verdict", "agent_role"],
+)
+_prom_enforcement = Gauge(
+    "agentguard_enforcement_active",
+    "1 when enforcement is ON, 0 when observe-only",
+)
+# Phase 5 — break out detections by the detector that fired + sandbox verdicts.
+_prom_detections = Counter(
+    "agentguard_detections_total",
+    "Detections by category (which detector fired)",
+    ["category", "verdict", "agent_role"],
+)
+_prom_sandbox = Counter(
+    "agentguard_sandbox_total",
+    "Sandboxed executions by verdict",
+    ["verdict", "tier"],
+)
+
+# Structured decision logger — exported to Loki via the OTLP log pipeline.
+_decision_log = logging.getLogger("agentguard.decisions")
 
 # In-memory ring buffer of recent triage decisions (last 200).
 # Written by /check, /v1/proxy/check, and /v1/posthook/scan handlers.
@@ -24,6 +58,38 @@ _decisions: deque = deque(maxlen=200)
 def _record(entry: dict) -> None:
     entry.setdefault("ts", datetime.datetime.utcnow().isoformat() + "Z")
     _decisions.appendleft(entry)
+    # Increment Prometheus counters for pre-hook decisions only
+    if entry.get("type") == "pre_hook":
+        verdict = entry.get("verdict", "allow")
+        role = entry.get("agent_role", "unknown")
+        route = entry.get("route", "unknown") or "unknown"
+        _prom_requests.labels(verdict=verdict, route=route, agent_role=role).inc()
+        if verdict in ("block", "block_short_circuit", "block_stage1"):
+            _prom_blocks.labels(verdict=verdict, agent_role=role).inc()
+        # Break out by which detector fired (only when one did).
+        category = entry.get("detection_category")
+        if category:
+            _prom_detections.labels(category=category, verdict=verdict, agent_role=role).inc()
+    elif entry.get("type") == "sandbox":
+        _prom_sandbox.labels(
+            verdict=entry.get("verdict", "unknown"),
+            tier=entry.get("tier", "docker"),
+        ).inc()
+    _prom_enforcement.set(1 if enforcement_is_on() else 0)
+
+    # Structured decision log → OTLP → Loki (Live Attack Logs panel).
+    try:
+        is_block = entry.get("verdict") in (
+            "block", "block_short_circuit", "block_stage1", "killed", "quarantined")
+        _decision_log.warning(
+            "decision %s tool=%s verdict=%s category=%s reason=%s",
+            "BLOCK" if is_block else entry.get("type", "decision"),
+            entry.get("tool_name"), entry.get("verdict"),
+            entry.get("detection_category"),
+            (entry.get("detection_reason") or entry.get("block_reason") or "")[:200],
+        )
+    except Exception:
+        pass
 
 
 @asynccontextmanager
@@ -66,12 +132,24 @@ class ProxyCheckRequest(BaseModel):
 @app.post("/check")
 async def gateway_check(req: GatewayRequest) -> JSONResponse:
     """Pre-execution gateway check — intent gate + triage via triage service."""
+    enforcement = enforcement_is_on()
+
+    # Toggle OFF → AgentGuard is dormant. No intent gate, no triage, no scoring,
+    # no decision recording. The client system runs completely unguarded so judges
+    # can compare behaviour with vs. without AgentGuard-X.
+    if not enforcement:
+        return JSONResponse(content={
+            "allowed": True,
+            "verdict": "bypassed",
+            "r": None,
+            "route": "bypassed",
+            "enforcement": False,
+        })
+
     from agentguard.gateway.intent_gate import IntentGate
 
     gate = IntentGate()
     intent = gate.check(req.agent_role, req.tool_name, req.declared_tools)
-
-    enforcement = enforcement_is_on()
 
     if not intent.allowed and enforcement:
         return JSONResponse(
@@ -112,6 +190,9 @@ async def gateway_check(req: GatewayRequest) -> JSONResponse:
 
     verdict = triage_result.get("verdict", "allow")
     blocked = verdict in ("block", "block_short_circuit", "block_stage1")
+    category = triage_result.get("detection_category")
+    # Prefer the specific detector reason over the generic short-circuit text.
+    detail_reason = triage_result.get("detection_reason") or triage_result.get("block_reason")
 
     _record({
         "type": "pre_hook",
@@ -122,6 +203,8 @@ async def gateway_check(req: GatewayRequest) -> JSONResponse:
         "r": triage_result.get("r"),
         "route": triage_result.get("route"),
         "block_reason": triage_result.get("block_reason"),
+        "detection_category": category,
+        "detection_reason": detail_reason,
         "enforcement": enforcement,
     })
 
@@ -131,7 +214,8 @@ async def gateway_check(req: GatewayRequest) -> JSONResponse:
             content={
                 "allowed": False,
                 "verdict": verdict,
-                "reason": triage_result.get("block_reason"),
+                "reason": detail_reason or triage_result.get("block_reason"),
+                "category": category,
                 "r": triage_result.get("r"),
                 "enforcement": enforcement,
             },
@@ -143,6 +227,7 @@ async def gateway_check(req: GatewayRequest) -> JSONResponse:
             "verdict": verdict,
             "r": triage_result.get("r"),
             "route": triage_result.get("route"),
+            "category": category,
             "enforcement": enforcement,
         }
     )
@@ -153,9 +238,19 @@ async def proxy_check(req: ProxyCheckRequest) -> JSONResponse:
     """Called by the TLS proxy addon for every intercepted agent request.
 
     Returns action: allow | block | observe.
-    Observability always fires regardless of enforcement state.
     """
     enforcement = enforcement_is_on()
+
+    # Toggle OFF → AgentGuard dormant: pass every flow through with no analysis.
+    if not enforcement:
+        return JSONResponse(content={
+            "action": "allow",
+            "verdict": "bypassed",
+            "reason": None,
+            "r": None,
+            "enforcement": False,
+            "proxy_flow_id": req.proxy_flow_id,
+        })
 
     # Stage 1: intent gate (stateless, no external deps)
     from agentguard.gateway.intent_gate import IntentGate
@@ -244,6 +339,15 @@ async def posthook_scan(req: PosthookScanRequest) -> JSONResponse:
     on the tool output inside the gateway process — no heavy deps in the
     FinanceFlow container.
     """
+    # Toggle OFF → AgentGuard dormant: never scan or quarantine output.
+    if not enforcement_is_on():
+        return JSONResponse({
+            "clean": True,
+            "quarantined": False,
+            "findings": [],
+            "sanitized_output": req.output,
+        })
+
     from agentguard.gateway.post_hook import PostHookProcessor
 
     proc = PostHookProcessor()
@@ -267,6 +371,105 @@ async def posthook_scan(req: PosthookScanRequest) -> JSONResponse:
         "findings": scan.findings,
         "sanitized_output": scan.sanitized_output,
     })
+
+
+# ── Phase 7 sandbox integration (defense-in-depth code execution) ─────────────
+_sandbox_manager: Any = None
+_sandbox_lock = asyncio.Lock()
+
+
+async def _get_sandbox():
+    """Lazily build + initialize the SandboxManager on first use.
+
+    Lazy so the gateway stays healthy even if Docker/sandbox image is missing —
+    the failure surfaces only on the first sandbox request, not at startup.
+    """
+    global _sandbox_manager
+    if _sandbox_manager is None:
+        async with _sandbox_lock:
+            if _sandbox_manager is None:
+                from agentguard.sandbox.manager import SandboxManager
+                mgr = SandboxManager.from_env()
+                await mgr.initialize()
+                _sandbox_manager = mgr
+    return _sandbox_manager
+
+
+class SandboxExecRequest(BaseModel):
+    tool_name: str
+    tool_input: dict[str, Any] = {}
+    session_id: str = ""
+    agent_id: str = "unknown"
+    agent_role: str = "admin"
+    requires_gvisor_floor: bool = False
+
+
+@app.post("/v1/sandbox/execute")
+async def sandbox_execute(req: SandboxExecRequest) -> JSONResponse:
+    """Run a tool call inside an ephemeral, network-isolated sandbox container.
+
+    Fingerprint diff decides promote (clean) vs kill (suspicious side-effects).
+    Toggle OFF → dormant: the caller runs the tool directly instead.
+    """
+    if not enforcement_is_on():
+        return JSONResponse({"sandboxed": False, "verdict": "bypassed", "enforcement": False})
+
+    try:
+        from agentguard.sandbox.model import SandboxJob
+
+        mgr = await _get_sandbox()
+        job = SandboxJob(
+            tool_name=req.tool_name,
+            tool_input=req.tool_input,
+            session_id=req.session_id,
+            agent_id=req.agent_id,
+            agent_role=req.agent_role,
+            requires_gvisor_floor=req.requires_gvisor_floor,
+        )
+        result = await mgr.run_sandboxed(job)
+        d = result.to_dict()
+
+        # The sandbox runner prints {"result": ...} / {"error": ...} as JSON on stdout.
+        tool_output = result.stdout
+        try:
+            parsed = json.loads(result.stdout) if result.stdout else {}
+            if isinstance(parsed, dict):
+                tool_output = parsed.get("result") or parsed.get("error") or result.stdout
+        except (ValueError, TypeError):
+            pass
+
+        _record({
+            "type": "sandbox",
+            "agent_id": req.agent_id,
+            "agent_role": req.agent_role,
+            "tool_name": req.tool_name,
+            "verdict": d["verdict"],
+            "r": None,
+            "tier": d["tier_used"],
+            "block_reason": d.get("block_reason"),
+            "enforcement": True,
+        })
+
+        return JSONResponse({
+            "sandboxed": True,
+            "verdict": d["verdict"],                 # promoted | killed | blocked | error
+            "tier": d["tier_used"],                  # docker | gvisor | blocked
+            "output": tool_output,
+            "block_reason": d.get("block_reason"),
+            "fingerprint": d.get("fingerprint_delta"),
+            "duration_ms": d.get("duration_ms"),
+            "enforcement": True,
+        })
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={
+            "sandboxed": False, "verdict": "error", "error": str(exc)[:200],
+        })
+
+
+@app.get("/metrics")
+async def metrics() -> Response:
+    _prom_enforcement.set(1 if enforcement_is_on() else 0)
+    return Response(generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/health")
@@ -294,7 +497,7 @@ async def toggle(request: Request) -> JSONResponse:
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
-        "agentguard.gateway.service:app",
+        app,
         host=os.getenv("GATEWAY_HOST", "0.0.0.0"),
         port=int(os.getenv("GATEWAY_PORT", "8080")),
         log_level="info",

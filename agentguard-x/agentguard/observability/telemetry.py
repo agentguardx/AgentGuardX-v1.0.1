@@ -14,6 +14,7 @@ All spans include:
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Optional
 
@@ -58,6 +59,10 @@ def setup_telemetry(service_name: str = _SERVICE_NAME) -> None:
     metrics.set_meter_provider(meter_provider)
     _meter = metrics.get_meter(service_name)
 
+    # ── Logs (OTLP → otel-collector → Loki) ───────────────────────────────────
+    # Fully guarded: if the logs SDK/exporter is unavailable the service still runs.
+    _setup_logging(resource)
+
     # ── Define key metrics ────────────────────────────────────────────────────
     _meter.create_counter(
         "agentguard.requests.total",
@@ -80,6 +85,36 @@ def setup_telemetry(service_name: str = _SERVICE_NAME) -> None:
         "agentguard.hold_queue.size",
         description="Number of operations currently in analyst hold queue",
     )
+
+
+_logging_configured = False
+
+
+def _setup_logging(resource) -> None:
+    """Attach an OTLP log handler to the root logger so app logs reach Loki.
+
+    Idempotent and fail-safe — any error leaves stdlib logging untouched.
+    """
+    global _logging_configured
+    if _logging_configured:
+        return
+    try:
+        from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+        from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+        from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
+
+        provider = LoggerProvider(resource=resource)
+        exporter = OTLPLogExporter(endpoint=_OTEL_ENDPOINT, insecure=True)
+        provider.add_log_record_processor(BatchLogRecordProcessor(exporter))
+
+        handler = LoggingHandler(level=logging.INFO, logger_provider=provider)
+        root = logging.getLogger()
+        root.addHandler(handler)
+        if root.level == logging.NOTSET or root.level > logging.INFO:
+            root.setLevel(logging.INFO)
+        _logging_configured = True
+    except Exception:
+        pass  # collector/logs SDK unavailable — app continues without log export
 
 
 def get_tracer() -> trace.Tracer:

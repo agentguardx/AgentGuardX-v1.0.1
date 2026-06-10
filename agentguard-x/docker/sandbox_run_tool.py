@@ -22,14 +22,26 @@ import os
 sys.path.insert(0, "/sandbox")
 
 
-def run() -> int:
-    if "--payload-stdin" not in sys.argv:
-        print(json.dumps({"error": "Expected --payload-stdin flag"}), file=sys.stderr)
-        return 2
+def _read_payload() -> str:
+    # Preferred: --payload <json> argument
+    if "--payload" in sys.argv:
+        idx = sys.argv.index("--payload")
+        if idx + 1 < len(sys.argv):
+            return sys.argv[idx + 1]
+    # Fallback: SANDBOX_PAYLOAD env var
+    if os.environ.get("SANDBOX_PAYLOAD"):
+        return os.environ["SANDBOX_PAYLOAD"]
+    # Legacy: stdin
+    if "--payload-stdin" in sys.argv:
+        return sys.stdin.read()
+    return ""
 
-    raw = sys.stdin.read()
+
+def run() -> int:
+    raw = _read_payload()
     if not raw:
-        print(json.dumps({"error": "Empty stdin payload"}), file=sys.stderr)
+        print(json.dumps({"error": "No payload provided (--payload / SANDBOX_PAYLOAD / stdin)"}),
+              file=sys.stderr)
         return 2
 
     try:

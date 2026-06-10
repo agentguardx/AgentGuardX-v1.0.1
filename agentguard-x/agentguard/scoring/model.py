@@ -76,5 +76,10 @@ class TriageResult:
     block_reason: Optional[str] = None
     short_circuited: bool = False
 
+    # Detection attribution (Phase 5 observability) — set by the pipeline from
+    # Stage 2's winning detector. None when nothing triggered.
+    detection_category: Optional[str] = None   # injection|concealment|egress|value|entropy|code|killchain
+    detection_reason: Optional[str] = None     # human-readable trigger text
+
     # Performance
     latency_ms: float = 0.0

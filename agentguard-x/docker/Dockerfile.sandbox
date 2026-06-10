@@ -11,8 +11,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Only FinanceFlow runtime deps needed in the sandbox
-COPY ../financeflow/requirements.txt ./financeflow-requirements.txt
+# Only FinanceFlow runtime deps needed in the sandbox.
+# Build context is the repo root (see docker-compose sandbox-builder).
+COPY financeflow/requirements.txt ./financeflow-requirements.txt
 RUN pip install --no-cache-dir --upgrade pip==24.3.1 \
     && pip install --no-cache-dir -r financeflow-requirements.txt --target /install
 
@@ -29,10 +30,10 @@ COPY --from=builder /install /usr/local/lib/python3.12/site-packages
 WORKDIR /sandbox
 
 # Copy the sandbox tool runner entrypoint
-COPY docker/sandbox_run_tool.py /sandbox/run_tool.py
+COPY agentguard-x/docker/sandbox_run_tool.py /sandbox/run_tool.py
 
 # Copy financeflow tools so they can be executed in the sandbox
-COPY ../financeflow/ /sandbox/financeflow/
+COPY financeflow/ /sandbox/financeflow/
 
 RUN chown -R sandbox:sandbox /sandbox
 
@@ -40,6 +41,7 @@ USER sandbox
 
 ENV PYTHONPATH=/sandbox
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
 ENV SANDBOX_MODE=1
 # Prevent any outbound network calls even if network isolation is misconfigured
 ENV NO_PROXY="*"

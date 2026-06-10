@@ -137,8 +137,10 @@ class SandboxExecutor:
             "agent_id": job.agent_id,
         })
 
-        # The sandbox image runs a minimal entry point that reads from stdin
-        cmd = ["python", "/sandbox/run_tool.py", "--payload-stdin"]
+        # Pass the payload as an argument (docker-py exec_run cannot reliably
+        # stream stdin without a raw socket). The runner also accepts it via the
+        # SANDBOX_PAYLOAD env var as a fallback.
+        cmd = ["python", "/sandbox/run_tool.py", "--payload", payload_json]
 
         try:
             loop = asyncio.get_event_loop()
@@ -147,11 +149,10 @@ class SandboxExecutor:
                     None,
                     lambda: container.exec_run(
                         cmd=cmd,
-                        stdin=True,
                         stdout=True,
                         stderr=True,
                         demux=True,
-                        environment={"SANDBOX_MODE": "1"},
+                        environment={"SANDBOX_MODE": "1", "SANDBOX_PAYLOAD": payload_json},
                     ),
                 ),
                 timeout=EXEC_TIMEOUT_SECONDS,

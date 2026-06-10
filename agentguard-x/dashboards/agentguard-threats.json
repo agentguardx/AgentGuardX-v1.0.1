@@ -1,12 +1,29 @@
 {
   "__inputs": [],
   "__requires": [
-    {"type": "grafana", "id": "grafana", "name": "Grafana", "version": "11.0.0"},
-    {"type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0"},
-    {"type": "datasource", "id": "loki", "name": "Loki", "version": "1.0.0"}
+    {
+      "type": "grafana",
+      "id": "grafana",
+      "name": "Grafana",
+      "version": "11.0.0"
+    },
+    {
+      "type": "datasource",
+      "id": "prometheus",
+      "name": "Prometheus",
+      "version": "1.0.0"
+    },
+    {
+      "type": "datasource",
+      "id": "loki",
+      "name": "Loki",
+      "version": "1.0.0"
+    }
   ],
-  "annotations": {"list": []},
-  "description": "AgentGuard-X — AI Agent Threat Detection Dashboard",
+  "annotations": {
+    "list": []
+  },
+  "description": "AgentGuard-X \u2014 AI Agent Threat Detection Dashboard",
   "editable": false,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -15,148 +32,612 @@
   "panels": [
     {
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
       "id": 100,
       "title": "Enforcement Status",
       "type": "row"
     },
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "thresholds"},
+          "color": {
+            "mode": "thresholds"
+          },
           "mappings": [
-            {"options": {"0": {"color": "red", "index": 0, "text": "OFF"}}, "type": "value"},
-            {"options": {"1": {"color": "green", "index": 1, "text": "ON"}}, "type": "value"}
+            {
+              "options": {
+                "0": {
+                  "color": "red",
+                  "index": 0,
+                  "text": "OFF"
+                }
+              },
+              "type": "value"
+            },
+            {
+              "options": {
+                "1": {
+                  "color": "green",
+                  "index": 1,
+                  "text": "ON"
+                }
+              },
+              "type": "value"
+            }
           ],
-          "thresholds": {"mode": "absolute", "steps": [
-            {"color": "red", "value": null},
-            {"color": "green", "value": 1}
-          ]}
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
         }
       },
-      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 1},
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 1
+      },
       "id": 1,
-      "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
       "title": "Enforcement Toggle",
       "type": "stat",
-      "targets": [{"datasource": {"type": "prometheus"}, "expr": "agentguard_enforcement_active", "legendFormat": "enforcement", "refId": "A"}]
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 5}]}}},
-      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 1},
-      "id": 2,
-      "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"]}},
-      "title": "Pending Holds",
-      "type": "stat",
-      "targets": [{"datasource": {"type": "prometheus"}, "expr": "agentguard_hold_queue_pending", "legendFormat": "pending", "refId": "A"}]
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}},
-      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 1},
-      "id": 3,
-      "options": {"colorMode": "background", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"]}},
-      "title": "Blocks (last 5m)",
-      "type": "stat",
-      "targets": [{"datasource": {"type": "prometheus"}, "expr": "increase(agentguard_blocks_total[5m])", "legendFormat": "blocks", "refId": "A"}]
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"axisCenteredZero": false, "axisColorMode": "text", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "lineWidth": 2, "pointSize": 5, "showPoints": "auto", "spanNulls": false}, "unit": "reqps"}},
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 5},
-      "id": 10,
-      "options": {"legend": {"calcs": ["mean", "lastNotNull"], "displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "none"}},
-      "title": "Triage Request Rate by Verdict",
-      "type": "timeseries",
       "targets": [
-        {"datasource": {"type": "prometheus"}, "expr": "rate(agentguard_requests_total{verdict=\"allow\"}[1m])", "legendFormat": "ALLOW", "refId": "A"},
-        {"datasource": {"type": "prometheus"}, "expr": "rate(agentguard_requests_total{verdict=\"grey_band\"}[1m])", "legendFormat": "GREY BAND", "refId": "B"},
-        {"datasource": {"type": "prometheus"}, "expr": "rate(agentguard_requests_total{verdict=\"block\"}[1m]) + rate(agentguard_requests_total{verdict=\"block_short_circuit\"}[1m])", "legendFormat": "BLOCK", "refId": "C"}
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "agentguard_enforcement_active",
+          "legendFormat": "enforcement",
+          "refId": "A"
+        }
       ]
     },
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 20, "lineWidth": 2}, "max": 1.0, "min": 0.0, "unit": "percentunit"}},
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 5},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          }
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 1
+      },
+      "id": 2,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "title": "Pending Holds",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "agentguard_hold_queue_pending",
+          "legendFormat": "pending",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 1
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "title": "Blocks (last 5m)",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "increase(agentguard_blocks_total[5m])",
+          "legendFormat": "blocks",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "auto",
+            "spanNulls": false
+          },
+          "unit": "reqps"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 5
+      },
+      "id": 10,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "title": "Triage Request Rate by Verdict",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "rate(agentguard_requests_total{verdict=\"allow\"}[1m])",
+          "legendFormat": "ALLOW",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "rate(agentguard_requests_total{verdict=\"grey_band\"}[1m])",
+          "legendFormat": "GREY BAND",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "rate(agentguard_requests_total{verdict=\"block\"}[1m]) + rate(agentguard_requests_total{verdict=\"block_short_circuit\"}[1m])",
+          "legendFormat": "BLOCK",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "lineWidth": 2
+          },
+          "max": 1.0,
+          "min": 0.0,
+          "unit": "percentunit"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 5
+      },
       "id": 11,
-      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "none"}},
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
       "title": "Composite Risk Score R (p50/p90/p99)",
       "type": "timeseries",
       "targets": [
-        {"datasource": {"type": "prometheus"}, "expr": "histogram_quantile(0.50, rate(agentguard_risk_score_bucket[5m]))", "legendFormat": "p50", "refId": "A"},
-        {"datasource": {"type": "prometheus"}, "expr": "histogram_quantile(0.90, rate(agentguard_risk_score_bucket[5m]))", "legendFormat": "p90", "refId": "B"},
-        {"datasource": {"type": "prometheus"}, "expr": "histogram_quantile(0.99, rate(agentguard_risk_score_bucket[5m]))", "legendFormat": "p99", "refId": "C"}
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "histogram_quantile(0.50, rate(agentguard_risk_score_bucket[5m]))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "histogram_quantile(0.90, rate(agentguard_risk_score_bucket[5m]))",
+          "legendFormat": "p90",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, rate(agentguard_risk_score_bucket[5m]))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
       ]
     },
     {
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 13},
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 13
+      },
       "id": 101,
       "title": "Kill Chain & Attack Detection",
       "type": "row"
     },
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "bars", "fillOpacity": 80, "lineWidth": 1}, "unit": "short"}},
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "lineWidth": 1
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 14
+      },
       "id": 20,
-      "options": {"legend": {"calcs": ["sum"], "displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "none"}},
+      "options": {
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
       "title": "Blocks by Verdict Type",
       "type": "timeseries",
       "targets": [
-        {"datasource": {"type": "prometheus"}, "expr": "increase(agentguard_blocks_total{verdict=\"block_short_circuit\"}[1m])", "legendFormat": "SHORT_CIRCUIT (S2≥0.95)", "refId": "A"},
-        {"datasource": {"type": "prometheus"}, "expr": "increase(agentguard_blocks_total{verdict=\"block\"}[1m])", "legendFormat": "COMPOSITE BLOCK", "refId": "B"},
-        {"datasource": {"type": "prometheus"}, "expr": "increase(agentguard_blocks_total{verdict=\"block_stage1\"}[1m])", "legendFormat": "STAGE1 GATE", "refId": "C"}
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "increase(agentguard_blocks_total{verdict=\"block_short_circuit\"}[1m])",
+          "legendFormat": "SHORT_CIRCUIT (S2\u22650.95)",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "increase(agentguard_blocks_total{verdict=\"block\"}[1m])",
+          "legendFormat": "COMPOSITE BLOCK",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "increase(agentguard_blocks_total{verdict=\"block_stage1\"}[1m])",
+          "legendFormat": "STAGE1 GATE",
+          "refId": "C"
+        }
       ]
     },
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "lineWidth": 2}, "unit": "ms"}},
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          },
+          "unit": "ms"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 14
+      },
       "id": 21,
-      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "none"}},
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
       "title": "Triage Latency (ms)",
       "type": "timeseries",
       "targets": [
-        {"datasource": {"type": "prometheus"}, "expr": "histogram_quantile(0.50, rate(agentguard_triage_latency_ms_bucket[5m]))", "legendFormat": "p50", "refId": "A"},
-        {"datasource": {"type": "prometheus"}, "expr": "histogram_quantile(0.95, rate(agentguard_triage_latency_ms_bucket[5m]))", "legendFormat": "p95", "refId": "B"},
-        {"datasource": {"type": "prometheus"}, "expr": "histogram_quantile(0.99, rate(agentguard_triage_latency_ms_bucket[5m]))", "legendFormat": "p99", "refId": "C"}
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "histogram_quantile(0.50, rate(agentguard_triage_latency_ms_bucket[5m]))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, rate(agentguard_triage_latency_ms_bucket[5m]))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, rate(agentguard_triage_latency_ms_bucket[5m]))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
       ]
     },
     {
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 22},
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
       "id": 102,
       "title": "Analyst Hold Queue",
       "type": "row"
     },
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 30, "lineWidth": 2}, "unit": "short"}},
-      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 23},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 30,
+            "lineWidth": 2
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 23
+      },
       "id": 30,
-      "options": {"legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "none"}},
-      "title": "Hold Queue — Status Over Time",
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "title": "Hold Queue \u2014 Status Over Time",
       "type": "timeseries",
       "targets": [
-        {"datasource": {"type": "prometheus"}, "expr": "agentguard_hold_queue_pending", "legendFormat": "pending", "refId": "A"},
-        {"datasource": {"type": "prometheus"}, "expr": "agentguard_hold_total{status=\"approved\"}", "legendFormat": "approved", "refId": "B"},
-        {"datasource": {"type": "prometheus"}, "expr": "agentguard_hold_total{status=\"rejected\"}", "legendFormat": "rejected", "refId": "C"},
-        {"datasource": {"type": "prometheus"}, "expr": "agentguard_hold_total{status=\"expired\"}", "legendFormat": "expired (→BLOCK)", "refId": "D"}
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "agentguard_hold_queue_pending",
+          "legendFormat": "pending",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "agentguard_hold_total{status=\"approved\"}",
+          "legendFormat": "approved",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "agentguard_hold_total{status=\"rejected\"}",
+          "legendFormat": "rejected",
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus"
+          },
+          "expr": "agentguard_hold_total{status=\"expired\"}",
+          "legendFormat": "expired (\u2192BLOCK)",
+          "refId": "D"
+        }
       ]
     },
     {
       "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 29},
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 29
+      },
       "id": 103,
       "title": "Live Attack Logs",
       "type": "row"
     },
     {
-      "datasource": {"type": "loki", "uid": "loki"},
-      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 30},
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 30
+      },
       "id": 40,
       "options": {
         "dedupStrategy": "none",
@@ -171,17 +652,149 @@
       "title": "AgentGuard-X Block/Hold Events",
       "type": "logs",
       "targets": [
-        {"datasource": {"type": "loki"}, "expr": "{service_name=~\"agentguard.*\"} |= \"block\" or |= \"hold\"", "legendFormat": "", "refId": "A"}
+        {
+          "datasource": {
+            "type": "loki"
+          },
+          "expr": "{service_name=~\"agentguard.*\"} |= \"block\" or |= \"hold\"",
+          "legendFormat": "",
+          "refId": "A"
+        }
       ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 41
+      },
+      "id": 104,
+      "title": "Detection Analytics (Phase 5)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "lineWidth": 1
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 42
+      },
+      "id": 50,
+      "options": {
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "title": "Detections by Category",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (category)(increase(agentguard_detections_total[5m]))",
+          "legendFormat": "{{category}}",
+          "refId": "A"
+        }
+      ],
+      "description": "Which detector fired: egress/value/entropy/concealment/injection/code/killchain."
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "lineWidth": 1
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 42
+      },
+      "id": 51,
+      "options": {
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "title": "Sandbox Verdicts",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (verdict)(agentguard_sandbox_total)",
+          "legendFormat": "{{verdict}}",
+          "refId": "A"
+        }
+      ],
+      "description": "Sandboxed code executions: promoted vs killed vs blocked."
     }
   ],
   "refresh": "10s",
   "schemaVersion": 39,
-  "tags": ["agentguardx", "security", "ai-agents"],
-  "time": {"from": "now-1h", "to": "now"},
+  "tags": [
+    "agentguardx",
+    "security",
+    "ai-agents"
+  ],
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
   "timepicker": {},
   "timezone": "browser",
-  "title": "AgentGuard-X — Threat Detection",
+  "title": "AgentGuard-X \u2014 Threat Detection",
   "uid": "agentguard-threats",
-  "version": 1
+  "version": 2
 }

@@ -1,5 +1,3 @@
-version: "3.9"
-
 # ── AgentGuard-X full stack ───────────────────────────────────────────────────
 # Run from the agentguard-x/ directory (or via agentguard.sh up).
 # All services run as non-root (UID 1001 where configurable).
@@ -33,6 +31,25 @@ services:
       retries: 5
     restart: unless-stopped
     user: "999:999"
+
+  # Redis Prometheus exporter — redis itself speaks no HTTP, so this sidecar
+  # exposes redis metrics at :9121/metrics for Prometheus to scrape.
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.66.0
+    container_name: agentguard-redis-exporter
+    ports:
+      - "9121:9121"
+    environment:
+      - REDIS_ADDR=redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/redis_exporter", "-version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
 
   chromadb:
     image: chromadb/chroma:0.6.3
@@ -168,6 +185,7 @@ services:
       HOLD_TIMEOUT_SECONDS: "300"
       CHEAP_GATE_AUTO_ALLOW_THRESHOLD: "100.0"
       CHEAP_GATE_AUTO_BLOCK_THRESHOLD: "1000000.0"
+      TOGGLE_FILE: "/app/state/.toggle_state"
     depends_on:
       triage:
         condition: service_healthy
@@ -178,8 +196,10 @@ services:
       retries: 5
       start_period: 30s
     restart: unless-stopped
+    user: root  # required to read the Docker socket for sandbox container management
     volumes:
       - toggle_state:/app/state
+      - /var/run/docker.sock:/var/run/docker.sock  # Phase 7 sandbox: spawn ephemeral worker containers
 
   # ── Observability Stack ─────────────────────────────────────────────────────
   otel-collector:
@@ -207,6 +227,7 @@ services:
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"   # allow POST /-/reload (no restart needed for config changes)
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:9090/-/healthy"]
       interval: 30s
@@ -239,6 +260,11 @@ services:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=agentguard
       - GF_USERS_ALLOW_SIGN_UP=false
+      # Allow the FinanceFlow Observability page to embed the dashboard in an iframe.
+      - GF_SECURITY_ALLOW_EMBEDDING=true
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_AUTH_ANONYMOUS_ORG_NAME=Main Org.
     volumes:
       - grafana_data:/var/lib/grafana
       - ./dashboards:/var/lib/grafana/dashboards:ro
@@ -294,6 +320,7 @@ services:
       - TRIAGE_URL=http://triage:8081
       - ANALYST_URL=http://analyst:8083
       - PROMETHEUS_URL=http://prometheus:9090
+      - OLLAMA_BASE_URL=http://ollama:11434
       - WEB_PORT=8100
     user: root  # required for docker socket read access
     depends_on:
@@ -356,8 +383,8 @@ services:
   # dynamically by SandboxManager. This service entry ensures the image is built.
   sandbox-builder:
     build:
-      context: .
-      dockerfile: docker/Dockerfile.sandbox
+      context: ..    # repo root — needs both agentguard-x/ and financeflow/
+      dockerfile: agentguard-x/docker/Dockerfile.sandbox
     image: agentguard-sandbox:latest
     container_name: agentguard-sandbox-builder
     command: ["echo", "sandbox image built"]

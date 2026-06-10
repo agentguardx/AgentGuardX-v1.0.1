@@ -232,7 +232,7 @@ async def dashboard() -> HTMLResponse:
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
-        "agentguard.analyst.service:app",
+        app,
         host=os.getenv("ANALYST_HOST", "0.0.0.0"),
         port=int(os.getenv("ANALYST_PORT", "8083")),
         log_level="info",

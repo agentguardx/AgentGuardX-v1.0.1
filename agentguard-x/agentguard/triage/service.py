@@ -10,12 +10,25 @@ from typing import Any, Optional
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from prometheus_client import Histogram, generate_latest, CONTENT_TYPE_LATEST, REGISTRY
 
 from agentguard.observability.telemetry import setup_telemetry
 from agentguard.scoring.model import TriageResult
 from agentguard.stages.base import StageInput
 from agentguard.triage.pipeline import TriagePipeline
 from agentguard.toggle import enforcement_is_on
+
+# ── Prometheus metrics ────────────────────────────────────────────────────────
+_prom_latency = Histogram(
+    "agentguard_triage_latency_ms",
+    "End-to-end triage pipeline latency in milliseconds",
+    buckets=[5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000],
+)
+_prom_risk_score = Histogram(
+    "agentguard_risk_score",
+    "Distribution of composite R scores",
+    buckets=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+)
 
 _pipeline: Optional[TriagePipeline] = None
 
@@ -88,6 +101,8 @@ class TriageResponse(BaseModel):
     short_circuited: bool
     latency_ms: float
     enforcement_active: bool
+    detection_category: Optional[str] = None
+    detection_reason: Optional[str] = None
 
 
 @app.post("/triage", response_model=TriageResponse)
@@ -112,6 +127,9 @@ async def triage_endpoint(req: TriageRequest) -> TriageResponse:
         inp, reversibility=req.reversibility
     )
 
+    _prom_latency.observe(result.latency_ms)
+    _prom_risk_score.observe(result.r)
+
     return TriageResponse(
         request_id=request_id,
         verdict=result.verdict.value,
@@ -126,7 +144,14 @@ async def triage_endpoint(req: TriageRequest) -> TriageResponse:
         short_circuited=result.short_circuited,
         latency_ms=result.latency_ms,
         enforcement_active=enforcement_is_on(),
+        detection_category=result.detection_category,
+        detection_reason=result.detection_reason,
     )
+
+
+@app.get("/metrics")
+async def metrics() -> Response:
+    return Response(generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/health")
@@ -146,7 +171,7 @@ async def set_toggle(request: Request) -> JSONResponse:
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
-        "agentguard.triage.service:app",
+        app,
         host=os.getenv("TRIAGE_HOST", "0.0.0.0"),
         port=int(os.getenv("TRIAGE_PORT", "8081")),
         log_level="info",
