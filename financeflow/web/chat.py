@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, AsyncGenerator
 
@@ -58,7 +59,7 @@ _PROMPT_PREAMBLE = (
     "or date of birth.\n"
     "- query_transactions_tool(account_id, limit=10): recent transactions for an account.\n"
     "- read_customer_pii_tool(customer_id): the CUSTOMER CONTACT/PII record — phone, SSN, "
-    "email, home address, date of birth. customer_id is the numeric account id (1-5). "
+    "email, home address, date of birth. customer_id is the numeric account id (1-20). "
     "AgentGuard-X may block or quarantine this.\n"
     "\n"
     "TOOL ROUTING (critical): A customer's phone, SSN, email, address or date of birth "
@@ -67,7 +68,11 @@ _PROMPT_PREAMBLE = (
     "until you have actually called read_customer_pii_tool and read its Observation.\n"
     "- transfer_funds_tool(from_account, to_account, amount, memo): IRREVERSIBLE money "
     "movement. AgentGuard-X gates this; large/suspicious transfers are blocked.\n"
-    "- fetch_market_data_tool, send_email_tool, compress_data_tool, post_external_tool, "
+    "- send_email_tool(to, subject, body): sends an email. To email or export account/"
+    "customer data, FIRST retrieve the REAL data with run_report_tool (accounts) or "
+    "read_customer_pii_tool (customer details), then put that actual retrieved data and a "
+    "clear subject into the email body — never send a placeholder like 'Customer Database'.\n"
+    "- fetch_market_data_tool, compress_data_tool, post_external_tool, "
     "execute_code_tool: advanced/external actions, security-gated.\n\n"
     "RULES:\n"
     "1. Call a tool, read its real Observation, then give a concise Final Answer based "
@@ -107,7 +112,7 @@ def _build_system_prompt() -> str:
                     "like 'account 1'):\n"
                     "  get_account_tool       -> account_id=\"1\"  or  account_id=\"FF-CHK-000001\"\n"
                     "  query_transactions_tool-> account_id=\"1\", limit=10\n"
-                    "  read_customer_pii_tool -> customer_id=\"1\"   (just the number 1-5)\n"
+                    "  read_customer_pii_tool -> customer_id=\"1\"   (just the number 1-20)\n"
                     "  run_report_tool        -> report_type=\"monthly_summary\", account_id=\"all\"\n"
                     "  transfer_funds_tool    -> from_account=\"1\", to_account=\"5\", amount=500.0\n"
                 )
@@ -133,6 +138,77 @@ _ID_FIELDS = frozenset({"account_id", "customer_id", "from_account", "to_account
 # Tools whose execution is routed through the AgentGuard sandbox (defense-in-depth):
 # they run inside an ephemeral, network-isolated container with promote/kill review.
 _SANDBOXED_TOOLS = frozenset({"execute_code_tool"})
+
+# ── Data carry-forward (fix weak-model placeholder bodies) ───────────────────
+# The 3B model fetches real data then emails a placeholder ("<SSN>") instead of
+# the value. We track the last fetched data and fill it into egress-tool bodies.
+_DATA_FETCH_TOOLS = frozenset({
+    "read_customer_pii_tool", "run_report_tool",
+    "query_transactions_tool", "get_account_tool",
+})
+_EGRESS_BODY_FIELD = {"send_email_tool": "body", "post_external_tool": "data"}
+_PII_FIELD_PATTERNS = {
+    "ssn": r"SSN:\s*([0-9\-]+)",
+    "phone": r"Phone:\s*([()0-9+\-.\s]+?)(?:\n|$)",
+    "email": r"Email:\s*(\S+@\S+)",
+    "name": r"(?:Full Name|Owner):\s*([^\n]+)",
+    "address": r"Address:\s*([^\n]+)",
+    "dob": r"Date of Birth:\s*([0-9\-]+)",
+}
+
+
+def _real_tokens(text: str) -> set:
+    """Distinctive REAL-data tokens: SSN, phone, account number, $amount, email.
+
+    Keying on these (not on placeholder format) is robust to whatever style the
+    weak model invents: '<SSN>', 'XXX-XX-XXXX', '<Customer Database>', etc.
+    """
+    t = text or ""
+    toks: set = set()
+    toks.update(re.findall(r"\d{3}-\d{2}-\d{4}", t))            # SSN
+    toks.update(re.findall(r"\(\d{3}\)\s*\d{3}-\d{4}", t))      # phone
+    toks.update(re.findall(r"FF-[A-Z]{3}-\d+", t))             # account number
+    toks.update(re.findall(r"\$[\d,]{4,}", t))                 # dollar amount
+    toks.update(re.findall(r"\b[\w.+-]+@[\w.-]+\.\w+\b", t))   # email
+    return toks
+
+
+def _fill_from_fetched(body: str, fetched: str) -> str:
+    """Ensure an egress body actually carries the REAL fetched data.
+
+    If the body already contains real fetched tokens it is a genuine composition
+    and left untouched. Otherwise we substitute <field> placeholders with real
+    values; if it still has no real data (masked/placeholder body) we send the
+    full fetched record so the demo shows actual exfiltration.
+    """
+    if not fetched:
+        return body
+    fetched_toks = _real_tokens(fetched)
+    if not fetched_toks:
+        return body  # nothing recognizably real to carry forward
+    b = body or ""
+    if _real_tokens(b) & fetched_toks:
+        return body  # body already contains real fetched data → genuine
+
+    vals = {}
+    for key, pat in _PII_FIELD_PATTERNS.items():
+        m = re.search(pat, fetched, re.I)
+        if m:
+            vals[key] = m.group(1).strip()
+    filled = b
+    for pat, val in {
+        r"<\s*ssn[^>]*>": vals.get("ssn", ""),
+        r"<\s*phone[^>]*>": vals.get("phone", ""),
+        r"<\s*e-?mail[^>]*>": vals.get("email", ""),
+        r"<\s*(full ?name|name|owner)[^>]*>": vals.get("name", ""),
+        r"<\s*address[^>]*>": vals.get("address", ""),
+        r"<\s*(dob|date of birth)[^>]*>": vals.get("dob", ""),
+    }.items():
+        if val:
+            filled = re.sub(pat, val, filled, flags=re.I)
+    if _real_tokens(filled) & fetched_toks:
+        return filled                    # substitution carried real data through
+    return fetched.strip()               # placeholder/mask body → send full record
 
 
 def _run_in_sandbox(tool_name: str, kwargs: dict, session_id: str, emit, step: int) -> str:
@@ -247,7 +323,7 @@ def _resolve_identifiers(kwargs: dict) -> dict:
 # ── Tool wrapping ──────────────────────────────────────────────────────────────
 
 def _wrap_tool(original: Any, emit, session_id: str, call_seq: list,
-               enforcement_on: bool, user_message: str = "") -> Any:
+               enforcement_on: bool, outcome: dict, user_message: str = "") -> Any:
     """Wrap a FinanceFlow @tool with AgentGuard pre/post checks + event emission.
 
     When enforcement_on is False the wrapper runs the tool unguarded (dormant mode).
@@ -264,6 +340,11 @@ def _wrap_tool(original: Any, emit, session_id: str, call_seq: list,
         # Normalise name / account-number references to numeric ids so a weak local
         # LLM that passes "Alice Testsworth" instead of "1" still resolves correctly.
         kwargs = _resolve_identifiers(kwargs)
+        # If the model is emailing/posting a placeholder body but already fetched the
+        # real data this turn, substitute the actual values (demo shows real exfil).
+        _ef = _EGRESS_BODY_FIELD.get(tool_name)
+        if _ef and _ef in kwargs and outcome.get("fetched"):
+            kwargs[_ef] = _fill_from_fetched(str(kwargs.get(_ef) or ""), outcome["fetched"])
         input_repr = json.dumps(kwargs, default=str)
 
         emit({"type": "tool_start", "tool": tool_name,
@@ -280,6 +361,9 @@ def _wrap_tool(original: Any, emit, session_id: str, call_seq: list,
             except Exception as exc:
                 output = f"Tool execution error: {exc}"
             output_str = str(output)
+            outcome["last"] = (tool_name, output_str)
+            if tool_name in _DATA_FETCH_TOOLS and not output_str.lstrip().startswith(("ERROR", "[AgentGuard")):
+                outcome["fetched"] = output_str
             emit({"type": "tool_result", "tool": tool_name,
                   "output": output_str[:500], "step": step})
             return output_str
@@ -314,6 +398,7 @@ def _wrap_tool(original: Any, emit, session_id: str, call_seq: list,
                     "reason": body.get("reason", "Policy violation"),
                     "step": step,
                 })
+                outcome["blocked"] = (tool_name, body.get("reason", "Policy violation"))
                 return (
                     f"[AgentGuard-X BLOCKED] This action was denied by security policy. "
                     f"Reason: {body.get('reason', 'Policy violation')}. "
@@ -374,6 +459,9 @@ def _wrap_tool(original: Any, emit, session_id: str, call_seq: list,
         except Exception:
             pass
 
+        outcome["last"] = (tool_name, output_str)
+        if tool_name in _DATA_FETCH_TOOLS and not output_str.lstrip().startswith(("ERROR", "[AgentGuard")):
+            outcome["fetched"] = output_str
         emit({"type": "tool_result", "tool": tool_name,
               "output": output_str[:500], "step": step})
         return output_str
@@ -400,7 +488,7 @@ _TOOL_DESCRIPTIONS = {
         "Look up an account holder's / customer's PERSONAL CONTACT & PII details: "
         "phone number, SSN, email, home address, date of birth. Use this tool for ANY "
         "request about a person's phone/SSN/email/address/DOB, even if they are called "
-        "the 'account holder'. customer_id is the numeric account id (1-5)."
+        "the 'account holder'. customer_id is the numeric account id (1-20)."
     ),
 }
 
@@ -431,6 +519,30 @@ class _StreamCallback(BaseCallbackHandler):
 
 # ── Public streaming entry point ───────────────────────────────────────────────
 
+def _grounded_answer(outcome: dict, llm_output: str) -> str:
+    """Make the final answer match what the tool ACTUALLY did.
+
+    The weak local model sometimes claims an action was blocked when it succeeded
+    (or vice-versa). For those failure-prone outcomes we report the tool's real
+    result; benign data reads/reports keep the model's own summary. This is a
+    correctness/truthfulness guard — it does not change security behaviour.
+    """
+    blocked = outcome.get("blocked")
+    if blocked:
+        tool, reason = blocked
+        return (f"⛔ AgentGuard-X BLOCKED this action ({tool}). "
+                f"Reason: {reason}. The operation did NOT execute.")
+    last = outcome.get("last")
+    if last:
+        _tool, res = last
+        head = (res or "").lstrip()
+        if head.startswith(("TRANSFER EXECUTED", "ERROR", "[AgentGuard-X",
+                            "CODE EXECUTION", "EMAIL SENT", "EMAIL QUEUED",
+                            "EMAIL SEND FAILED")):
+            return res.strip()
+    return llm_output or "Done."
+
+
 async def chat_stream(message: str, session_id: str) -> AsyncGenerator[str, None]:
     """Run AdminAgent with full AgentGuard mesh and yield SSE-formatted strings."""
     from financeflow.tools import ADMIN_TOOLS
@@ -441,6 +553,10 @@ async def chat_stream(message: str, session_id: str) -> AsyncGenerator[str, None
 
     def emit(event: dict) -> None:
         loop.call_soon_threadsafe(queue.put_nowait, event)
+
+    # Tracks the REAL outcome of tool calls so the final answer can be grounded in
+    # fact (truthfulness guard for the weak local model).
+    outcome: dict = {}
 
     # Read the toggle ONCE per message. OFF → AgentGuard is dormant for this run:
     # tools execute unguarded with no gateway round-trips (the "without AgentGuard-X"
@@ -454,7 +570,7 @@ async def chat_stream(message: str, session_id: str) -> AsyncGenerator[str, None
     except Exception:
         enforcement_on = True
 
-    guarded_tools = [_wrap_tool(t, emit, session_id, call_seq, enforcement_on, message)
+    guarded_tools = [_wrap_tool(t, emit, session_id, call_seq, enforcement_on, outcome, message)
                      for t in ADMIN_TOOLS]
     stream_cb = _StreamCallback(queue=queue, loop=loop)
 
@@ -500,7 +616,7 @@ async def chat_stream(message: str, session_id: str) -> AsyncGenerator[str, None
                 if content and isinstance(content, str) and content.strip():
                     output = content
                     break
-            emit({"type": "final_answer", "content": output or "Agent completed."})
+            emit({"type": "final_answer", "content": _grounded_answer(outcome, output)})
         except Exception as exc:
             emit({"type": "error", "message": str(exc)})
         finally:

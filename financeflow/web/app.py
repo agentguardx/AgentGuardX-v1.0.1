@@ -134,6 +134,20 @@ async def api_status():
         except Exception:
             result["services"]["redis"] = False
 
+        # Proxy (mitmproxy egress filter) — it has no HTTP health endpoint
+        # (direct GETs return 403 by design), so we check the port is open,
+        # matching the proxy container's own TCP healthcheck.
+        try:
+            proxy_target = os.getenv("PROXY_URL", "proxy:8082")
+            proxy_target = proxy_target.replace("http://", "").replace("https://", "")
+            phost, _, pport = proxy_target.partition(":")
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection(phost, int(pport or "8082")), timeout=3.0)
+            writer.close()
+            result["services"]["proxy"] = True
+        except Exception:
+            result["services"]["proxy"] = False
+
         # Enforcement state + recent decisions from gateway
         try:
             r = await c.get(f"{GATEWAY_URL}/admin/status")
@@ -153,6 +167,17 @@ async def api_status():
             pass
 
     return JSONResponse(result)
+
+
+@app.get("/api/agents")
+async def api_agents():
+    """Proxy the gateway's live agent registry + RBAC/ABAC policy for the dashboard."""
+    async with httpx.AsyncClient(timeout=4.0) as c:
+        try:
+            r = await c.get(f"{GATEWAY_URL}/admin/agents")
+            return JSONResponse(r.json(), status_code=r.status_code)
+        except Exception as e:
+            return JSONResponse({"error": str(e), "agents": [], "policy": {}}, status_code=503)
 
 
 @app.post("/api/toggle")
@@ -803,12 +828,33 @@ tbody tr:last-child{border-bottom:none}
 
       <div class="card">
         <div class="card-header">
-          <span class="card-title">Latest Security Decisions</span>
-          <span id="decisions-badge" class="badge muted">Loading…</span>
+          <span class="card-title">Agents &amp; Tool Intercepts</span>
+          <span class="badge blue">Live</span>
         </div>
-        <div class="card-body" style="padding:0 18px">
-          <div id="decisions-mini" style="max-height:260px;overflow-y:auto"></div>
+        <div class="card-body" style="padding:16px 18px">
+          <div style="color:var(--muted);font-size:12px;margin-bottom:12px">
+            Every tool call an agent makes is intercepted at the gateway:
+            <b>pre-hook</b> (identity → RBAC → policy → behavioral) →
+            <b>verdict</b> → tool runs → <b>post-hook</b> (output scan).
+            Tools below are tagged with their policy <b>risk score</b>.
+          </div>
+          <div id="sec-intercepts" class="empty" style="max-height:260px;overflow-y:auto">Loading…</div>
         </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <div class="card-header">
+        <span class="card-title">FinanceFlow Agents — RBAC / ABAC</span>
+        <span class="badge purple">AgentGuard Registry · Live</span>
+      </div>
+      <div class="card-body" style="padding:16px 18px">
+        <div style="color:var(--muted);font-size:12px;margin-bottom:14px">
+          Inbound agents FinanceFlow exposes to AgentGuard-X. Each declares a tool
+          envelope (<b>RBAC</b>) and carries enforcement attributes (<b>ABAC</b>) —
+          isolation floor, rate limit, and PII reach.
+        </div>
+        <div id="ff-agents" class="empty">Loading agents…</div>
       </div>
     </div>
   </div>
@@ -971,6 +1017,50 @@ tbody tr:last-child{border-bottom:none}
           <div class="card-body">
             <div id="verdict-dist" style="display:grid;grid-template-columns:1fr 1fr;gap:8px"></div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid2" style="margin-top:14px">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Latest Security Decisions</span>
+          <span id="decisions-badge" class="badge muted">Loading…</span>
+        </div>
+        <div class="card-body" style="padding:0 18px">
+          <div id="decisions-mini" style="max-height:300px;overflow-y:auto"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">AgentGuard-X Basics</span>
+          <span class="badge purple">Primer</span>
+        </div>
+        <div class="card-body" style="padding:16px 18px;font-size:12.5px;line-height:1.65;color:var(--text)">
+          <p style="margin:0 0 12px"><b>What it is.</b> An external security mesh that sits
+          between FinanceFlow's agents and their tools. A model's own guardrails can be
+          jailbroken or talked around — AgentGuard-X enforces from <i>outside</i> the model,
+          so a compromised prompt still cannot exfiltrate data or move funds.</p>
+          <p style="margin:0 0 8px"><b>Pre-hook pipeline</b> (runs before every tool call):</p>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">
+            <span class="badge muted">S1 · Identity</span>
+            <span class="badge muted">S1 · RBAC envelope</span>
+            <span class="badge muted">S2 · Signatures / heuristics</span>
+            <span class="badge muted">S3 · OPA policy</span>
+            <span class="badge muted">S5 · Behavioral / rate</span>
+            <span class="badge muted">Sandbox (code)</span>
+          </div>
+          <p style="margin:0 0 8px"><b>Verdicts.</b></p>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">
+            <span class="badge green">allow</span>
+            <span class="badge amber">grey-band → analyst hold</span>
+            <span class="badge red">block</span>
+          </div>
+          <p style="margin:0"><b>Enforcement toggle.</b>
+          <span style="color:var(--green)">ON</span> intercepts &amp; scores every call;
+          <span style="color:var(--muted)">OFF</span> is dormant pass-through — the A/B control
+          that shows what the agent does <i>unguarded</i>.</p>
         </div>
       </div>
     </div>
@@ -1795,6 +1885,101 @@ async function updateSecurityCount() {
   } catch(e) {}
 }
 
+// ── FinanceFlow agents (RBAC / ABAC) + intercept map ──
+const TOOL_SHORT = {
+  get_account_tool:'get_account', query_transactions_tool:'query_transactions',
+  read_customer_pii_tool:'read_customer_pii', transfer_funds_tool:'transfer_funds',
+  run_report_tool:'run_report', fetch_market_data_tool:'fetch_market_data',
+  send_email_tool:'send_email', compress_data_tool:'compress_data',
+  post_external_tool:'post_external', execute_code_tool:'execute_code'
+};
+const PII_TOOLS = new Set(['read_customer_pii_tool']);
+const EGRESS_TOOLS = new Set(['send_email_tool','post_external_tool','compress_data_tool','execute_code_tool','transfer_funds_tool']);
+function shortTool(t){ return TOOL_SHORT[t] || t; }
+function roleBadge(role){
+  const m = {research:'blue', data:'amber', admin:'red'};
+  return `<span class="badge ${m[role]||'muted'}">${escHtml(role)}</span>`;
+}
+function toolChip(t, risks){
+  const rk = risks[t];
+  const hi = (rk != null && rk >= 0.5);
+  const lbl = escHtml(shortTool(t)) + (rk != null ? ` · ${rk}` : '');
+  return `<span class="badge ${hi?'red':'muted'}" title="policy risk score: ${rk!=null?rk:'n/a'}">${lbl}</span>`;
+}
+
+async function loadAgents() {
+  let data;
+  try { const r = await fetch('/api/agents'); data = await r.json(); }
+  catch(e) {
+    const h = document.getElementById('ff-agents');
+    if (h) h.innerHTML = '<div class="empty">Gateway unreachable</div>';
+    return;
+  }
+  const agents = data.agents || [];
+  const policy = data.policy || {};
+  const rates  = policy.rate_limits || {};
+  const risks  = policy.tool_risk_scores || {};
+
+  // Dashboard — full agent cards (RBAC envelope + ABAC attributes)
+  const host = document.getElementById('ff-agents');
+  if (host) {
+    if (!agents.length) { host.innerHTML = '<div class="empty">No agents registered</div>'; }
+    else {
+      host.classList.remove('empty');
+      host.innerHTML = agents.map(a => {
+        const tools = a.allowed_tools || [];
+        const hasPII = tools.some(t => PII_TOOLS.has(t));
+        const canEgress = tools.some(t => EGRESS_TOOLS.has(t));
+        const tier = a.role==='admin' ? 'full privilege' : (a.role==='data' ? 'mid privilege' : 'lowest privilege');
+        const iso = a.isolation_floor || 'docker';
+        const rate = rates[a.role];
+        const chips = tools.map(t => toolChip(t, risks)).join('');
+        return `
+        <div style="border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:12px;background:rgba(255,255,255,.015)">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px">
+            <span style="font-weight:700;font-size:13.5px">${escHtml(a.agent_id)}</span>
+            ${roleBadge(a.role)}
+            <span class="badge ${iso==='gvisor'?'purple':'muted'}">${iso==='gvisor'?'gVisor floor':'docker floor'}</span>
+          </div>
+          <div style="color:var(--muted);font-size:11.5px;margin-bottom:10px">${escHtml(a.description||'')}</div>
+          <div style="font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">RBAC · tool envelope (${tools.length})</div>
+          <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:12px">${chips}</div>
+          <div style="font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">ABAC · attributes</div>
+          <div style="display:flex;flex-wrap:wrap;gap:5px">
+            <span class="badge muted">privilege: ${tier}</span>
+            <span class="badge ${iso==='gvisor'?'purple':'muted'}">isolation: ${escHtml(iso)}</span>
+            ${rate!=null ? `<span class="badge muted">rate: ${rate}/min</span>` : ''}
+            <span class="badge ${hasPII?'amber':'muted'}">PII reach: ${hasPII?'yes':'no'}</span>
+            <span class="badge ${canEgress?'red':'muted'}">egress / funds: ${canEgress?'yes':'no'}</span>
+          </div>
+        </div>`;
+      }).join('');
+    }
+  }
+
+  // Security Feed — compact agent → intercepted-tool map
+  const sec = document.getElementById('sec-intercepts');
+  if (sec) {
+    if (!agents.length) { sec.innerHTML = '<div class="empty">No agents</div>'; }
+    else {
+      sec.classList.remove('empty');
+      sec.innerHTML = agents.map(a => {
+        const tools = a.allowed_tools || [];
+        const chips = tools.map(t => toolChip(t, risks)).join(' ');
+        return `
+        <div style="padding:9px 0;border-bottom:1px solid var(--border)">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+            ${roleBadge(a.role)}
+            <span style="font-weight:600;font-size:12px">${escHtml(a.agent_id)}</span>
+            <span style="color:var(--muted);font-size:11px">→ ${tools.length} intercepted tools</span>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:5px">${chips}</div>
+        </div>`;
+      }).join('');
+    }
+  }
+}
+
 // ── Startup ──
 (async function init() {
   const startPage = PATH_TO_PAGE[window.location.pathname] || 'dashboard';
@@ -1803,6 +1988,7 @@ async function updateSecurityCount() {
   await loadTransactions();
   await loadStatus();
   await updateSecurityCount();
+  await loadAgents();
   renderVerdictDist();
 
   // Refresh every 5s
@@ -1810,6 +1996,9 @@ async function updateSecurityCount() {
     await loadStatus();
     await updateSecurityCount();
   }, 5000);
+
+  // Agent registry rarely changes — refresh occasionally
+  setInterval(loadAgents, 60000);
 
   // Refresh data less often
   setInterval(async () => {

@@ -11,6 +11,7 @@ from collections import deque
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -438,6 +439,14 @@ async def sandbox_execute(req: SandboxExecRequest) -> JSONResponse:
         except (ValueError, TypeError):
             pass
 
+        # Visible runtime line in `docker logs agentguard-gateway`.
+        print(
+            f"[SANDBOX] tool={req.tool_name} verdict={d['verdict']} "
+            f"tier={d['tier_used']} duration={d.get('duration_ms', 0):.0f}ms"
+            + (f" reason={d.get('block_reason')}" if d.get("block_reason") else ""),
+            flush=True,
+        )
+
         _record({
             "type": "sandbox",
             "agent_id": req.agent_id,
@@ -483,6 +492,66 @@ async def admin_status() -> JSONResponse:
     return JSONResponse({
         "enforcement": enforcement_is_on(),
         "recent_decisions": list(_decisions)[:100],
+    })
+
+
+@app.get("/admin/agents")
+async def admin_agents() -> JSONResponse:
+    """Expose the LIVE FinanceFlow agent registry + RBAC/ABAC policy for the web UI.
+
+    - agents: declared tool envelopes (RBAC) + isolation floor (ABAC) from the
+      in-memory registry that Stage 1 / the intent gate actually enforce.
+    - policy: per-role rate limits + per-tool risk scores pulled live from OPA's
+      data API (the same policy Stage 3 evaluates). Falls back to {} if OPA is
+      unreachable so the endpoint never hard-fails.
+    """
+    from agentguard.registry.agent_registry import get_agent_registry
+
+    registry = get_agent_registry()
+    agents = [
+        {
+            "agent_id": a.agent_id,
+            "role": a.role,
+            "allowed_tools": list(a.allowed_tools),
+            "isolation_floor": a.isolation_floor,
+            "description": a.description,
+        }
+        for a in registry.all()
+    ]
+
+    # Mirrors policies/rbac/rbac.rego — used as a fallback when OPA's data API
+    # has no bundle loaded (kept in sync with the rego, single source of truth).
+    _RBAC_RATE_LIMITS = {"research": 50, "data": 30, "admin": 20}
+    _RBAC_TOOL_RISK_SCORES = {
+        "transfer_funds_tool": 0.75,
+        "execute_code_tool": 0.75,
+        "post_external_tool": 0.80,
+        "read_customer_pii_tool": 0.40,
+        "send_email_tool": 0.50,
+        "compress_data_tool": 0.20,
+    }
+
+    rate_limits: dict = {}
+    risk_scores: dict = {}
+    opa_url = os.getenv("OPA_URL", "http://opa:8181").rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as c:
+            rl = await c.get(f"{opa_url}/v1/data/agentguard/rbac/role_rate_limits")
+            if rl.status_code == 200:
+                rate_limits = rl.json().get("result", {}) or {}
+            rs = await c.get(f"{opa_url}/v1/data/agentguard/rbac/tool_risk_scores")
+            if rs.status_code == 200:
+                risk_scores = rs.json().get("result", {}) or {}
+    except Exception:
+        pass
+
+    # Fall back to the policy values if OPA returned nothing.
+    rate_limits = rate_limits or _RBAC_RATE_LIMITS
+    risk_scores = risk_scores or _RBAC_TOOL_RISK_SCORES
+
+    return JSONResponse({
+        "agents": agents,
+        "policy": {"rate_limits": rate_limits, "tool_risk_scores": risk_scores},
     })
 
 

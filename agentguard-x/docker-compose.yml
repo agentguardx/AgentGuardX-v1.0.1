@@ -81,6 +81,10 @@ services:
       - "--server"
       - "--addr=0.0.0.0:8181"
       - "--log-level=info"
+      # --watch reloads policies when /policies changes or is populated after
+      # startup. Without it, an empty bind-mount at boot (Docker-Desktop race
+      # after a host restart) leaves OPA with zero policies until manual restart.
+      - "--watch"
       - "/policies"
     healthcheck:
       test: ["CMD", "/opa", "check", "/policies"]
@@ -221,6 +225,11 @@ services:
     container_name: agentguard-prometheus
     ports:
       - "9090:9090"
+    # Force the Go resolver to query single-label names directly (avoids the
+    # "server misbehaving" parallel A/AAAA failure against Docker's embedded DNS).
+    dns_opt:
+      - "ndots:0"
+      - "single-request"
     volumes:
       - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
@@ -322,6 +331,15 @@ services:
       - PROMETHEUS_URL=http://prometheus:9090
       - OLLAMA_BASE_URL=http://ollama:11434
       - WEB_PORT=8100
+      # ── Real email (send_email_tool) — sourced from agentguard-x/.env (gitignored).
+      # If unset, send_email_tool simulates (logs only). When set, it sends REAL email.
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM=${SMTP_FROM:-}
+      - SMTP_SSL=${SMTP_SSL:-false}
+      - SMTP_STARTTLS=${SMTP_STARTTLS:-true}
     user: root  # required for docker socket read access
     depends_on:
       gateway:

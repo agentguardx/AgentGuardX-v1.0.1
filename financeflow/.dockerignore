@@ -1,0 +1,17 @@
+# Never bake bytecode or local caches into the image — they shadow source
+# (stale .pyc with matching mtime is loaded instead of recompiling the .py)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.coverage
+.venv/
+venv/
+.git/
+*.db
+*.sqlite
+data/
