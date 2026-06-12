@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
+import time
 import os
 import sys
 from contextlib import asynccontextmanager
@@ -211,7 +212,9 @@ async def api_prometheus():
                 r = await c.get(f"{PROMETHEUS_URL}/api/v1/query", params={"query": q})
                 d = r.json()
                 res = d.get("data", {}).get("result", [])
-                out[key] = round(float(res[0]["value"][1]), 1) if res else 0
+                # Counts are whole numbers; increase() over a partial 1h window
+                # extrapolates to fractions — round to int so the UI shows clean counts.
+                out[key] = int(round(float(res[0]["value"][1]))) if res else 0
             except Exception:
                 out[key] = None
     return JSONResponse(out)
@@ -251,7 +254,8 @@ async def demo_scenarios():
     return JSONResponse({
         "attacks": [
             {"name": s.name, "description": s.description,
-             "owasp": s.owasp_category, "role": s.agent_role,
+             "owasp": s.owasp_category, "owasp_name": s.owasp_name,
+             "vector": s.vector, "role": s.agent_role,
              "steps": len(s.scripted_tool_calls)}
             for s in ATTACK_WORKFLOWS
         ],
@@ -276,7 +280,8 @@ async def demo_run(scenario_name: str, enforcement: bool = True):
             return
 
         yield _sse({"type": "start", "scenario": scenario_name,
-                    "owasp": scenario.owasp_category, "role": scenario.agent_role,
+                    "owasp": scenario.owasp_category, "owasp_name": scenario.owasp_name,
+                    "vector": scenario.vector, "role": scenario.agent_role,
                     "enforcement": enforcement})
 
         gateway_url = GATEWAY_URL
@@ -301,6 +306,63 @@ async def demo_run(scenario_name: str, enforcement: bool = True):
         }
         declared = _ROLE_TOOLS_MAP.get(scenario.agent_role, [])
         prev_outputs: dict[str, str] = {}
+
+        # ── Latency / throughput accounting ──────────────────────────────────
+        t_wall0 = time.perf_counter()
+        check_latencies: list[float] = []   # ms per AgentGuard-X check (pre + post)
+
+        async def _agc_check(payload: dict) -> tuple[int, dict, float]:
+            t = time.perf_counter()
+            try:
+                async with _httpx.AsyncClient(timeout=8.0) as c:
+                    resp = await c.post(f"{gateway_url}/check", json=payload)
+                ms = (time.perf_counter() - t) * 1000.0
+                check_latencies.append(ms)
+                return resp.status_code, (resp.json() if resp.content else {}), ms
+            except Exception as e:
+                ms = (time.perf_counter() - t) * 1000.0
+                check_latencies.append(ms)
+                return 0, {"_error": str(e)}, ms
+
+        def _metrics() -> dict:
+            total_ms = (time.perf_counter() - t_wall0) * 1000.0
+            n = len(check_latencies)
+            return {
+                "checks": n,
+                "total_ms": round(total_ms, 1),
+                "avg_check_ms": round(sum(check_latencies) / n, 1) if n else 0.0,
+                "max_check_ms": round(max(check_latencies), 1) if n else 0.0,
+                # throughput = AgentGuard checks evaluated per second of wall time
+                "throughput_rps": round(n / (total_ms / 1000.0), 1) if total_ms > 0 else 0.0,
+            }
+
+        # ── Prompt pre-scan (prompt-vector attacks: LLM01 / LLM04 / LLM07) ────
+        # AgentGuard-X scans the inbound attacker prompt via a benign, in-envelope
+        # tool so only Stage-2 signature/heuristic detection on the prompt text
+        # drives the verdict (RBAC stays neutral). The attack dies at the door.
+        if scenario.vector == "prompt":
+            prompt_payload = {
+                "session_id": session_id,
+                "agent_id": f"financeflow-{scenario.agent_role}",
+                "agent_role": scenario.agent_role,
+                "tool_name": "get_account_tool",
+                "tool_input": {"input": scenario.task},
+                "raw_payload": f"prompt_scan agent=financeflow-{scenario.agent_role} task={scenario.task}",
+                "declared_tools": declared,
+                "reversibility": "reversible",
+            }
+            code, body, ms = await _agc_check(prompt_payload)
+            p_blocked = (code == 403)
+            yield _sse({"type": "prompt_scan", "blocked": p_blocked and enforcement,
+                        "verdict": body.get("verdict", "allow" if code == 200 else "error"),
+                        "category": body.get("category"), "r": body.get("r") or 0.0,
+                        "reason": body.get("reason", ""), "latency_ms": round(ms, 1)})
+            if p_blocked and enforcement:
+                m = _metrics()
+                yield _sse({"type": "metrics", **m})
+                yield _sse({"type": "scenario_complete", "outcome": "BLOCKED",
+                            "blocked_at": "prompt", **m})
+                return
 
         for step_idx, step in enumerate(scenario.scripted_tool_calls):
             tool_name = step["tool"]
@@ -338,33 +400,21 @@ async def demo_run(scenario_name: str, enforcement: bool = True):
             yield _sse({"type": "step_start", "step": step_idx + 1,
                         "tool": tool_name, "input": resolved})
 
-            # Pre-execution check
-            blocked = False
-            block_reason = ""
-            verdict = "allow"
-            r_score = 0.0
-            try:
-                async with _httpx.AsyncClient(timeout=8.0) as c:
-                    resp = await c.post(f"{gateway_url}/check", json=payload)
-                if resp.status_code == 403:
-                    body = resp.json()
-                    blocked = True
-                    block_reason = body.get("reason", "blocked")
-                    verdict = body.get("verdict", "block")
-                    r_score = body.get("r") or 0.0
-                elif resp.status_code == 200:
-                    body = resp.json()
-                    verdict = body.get("verdict", "allow")
-                    r_score = body.get("r") or 0.0
-            except Exception as e:
-                if enforcement:
-                    blocked = True
-                    block_reason = f"Gateway unreachable (fail-closed): {e}"
+            # Pre-execution check (latency tracked)
+            code, body, ms = await _agc_check(payload)
+            blocked = (code == 403)
+            verdict = body.get("verdict", "block" if blocked else "allow")
+            r_score = body.get("r") or 0.0
+            block_reason = body.get("reason", "blocked")
+            if code == 0 and enforcement:
+                blocked = True
+                block_reason = f"Gateway unreachable (fail-closed): {body.get('_error', '')}"
 
             if blocked and enforcement:
                 yield _sse({"type": "step_blocked", "step": step_idx + 1,
                             "tool": tool_name, "verdict": verdict,
-                            "r": r_score, "reason": block_reason})
+                            "r": r_score, "reason": block_reason,
+                            "latency_ms": round(ms, 1)})
                 yield _sse({"type": "kill_chain_stopped", "step": step_idx + 1})
                 break
 
@@ -383,9 +433,10 @@ async def demo_run(scenario_name: str, enforcement: bool = True):
             yield _sse({"type": "step_executed", "step": step_idx + 1,
                         "tool": tool_name, "output_preview": output[:300]})
 
-            # Post-execution scan
+            # Post-execution scan (latency tracked)
             quarantined = False
             findings: list = []
+            t = time.perf_counter()
             try:
                 async with _httpx.AsyncClient(timeout=5.0) as c:
                     pr = await c.post(
@@ -394,12 +445,13 @@ async def demo_run(scenario_name: str, enforcement: bool = True):
                               "agent_id": f"financeflow-{scenario.agent_role}",
                               "session_id": session_id},
                     )
+                check_latencies.append((time.perf_counter() - t) * 1000.0)
                 if pr.status_code == 200:
                     pb = pr.json()
                     quarantined = pb.get("quarantined", False)
                     findings = pb.get("findings", [])
             except Exception:
-                pass
+                check_latencies.append((time.perf_counter() - t) * 1000.0)
 
             if quarantined and enforcement:
                 yield _sse({"type": "step_quarantined", "step": step_idx + 1,
@@ -409,15 +461,22 @@ async def demo_run(scenario_name: str, enforcement: bool = True):
 
             yield _sse({"type": "step_allowed", "step": step_idx + 1,
                         "tool": tool_name, "verdict": verdict, "r": r_score,
-                        "quarantined": quarantined, "findings": findings})
+                        "quarantined": quarantined, "findings": findings,
+                        "latency_ms": round(ms, 1)})
 
         else:
+            m = _metrics()
+            yield _sse({"type": "metrics", **m})
             yield _sse({"type": "scenario_complete",
-                        "outcome": "SUCCEEDED" if not enforcement else "PASSED_THROUGH"})
+                        "outcome": "SUCCEEDED" if not enforcement else "PASSED_THROUGH",
+                        **m})
             return
 
         # If we broke out of the loop
-        yield _sse({"type": "scenario_complete", "outcome": "BLOCKED"})
+        m = _metrics()
+        yield _sse({"type": "metrics", **m})
+        yield _sse({"type": "scenario_complete", "outcome": "BLOCKED",
+                    "blocked_at": "tool", **m})
 
     return StreamingResponse(
         _gen(),
@@ -838,7 +897,7 @@ tbody tr:last-child{border-bottom:none}
             <b>verdict</b> → tool runs → <b>post-hook</b> (output scan).
             Tools below are tagged with their policy <b>risk score</b>.
           </div>
-          <div id="sec-intercepts" class="empty" style="max-height:260px;overflow-y:auto">Loading…</div>
+          <div id="sec-intercepts" class="empty">Loading…</div>
         </div>
       </div>
     </div>
@@ -973,10 +1032,28 @@ tbody tr:last-child{border-bottom:none}
     <div id="demo-output" class="card" style="margin-bottom:16px">
       <div class="card-header">
         <span class="card-title" id="demo-out-title">Scenario Output</span>
-        <span id="demo-out-verdict" class="badge muted"></span>
+        <div style="display:flex;gap:10px;align-items:center">
+          <span id="demo-out-metrics" style="font-size:11px;color:var(--muted)"></span>
+          <span id="demo-out-verdict" class="badge muted"></span>
+        </div>
       </div>
       <div class="card-body" style="padding:0 18px">
         <div id="demo-steps"></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-header">
+        <span class="card-title">OWASP-LLM Top-10 Coverage</span>
+        <span id="owasp-coverage-badge" class="badge purple">—</span>
+      </div>
+      <div class="card-body" style="padding:14px 18px">
+        <div id="owasp-coverage" style="display:flex;flex-wrap:wrap;gap:8px"></div>
+        <div style="color:var(--muted);font-size:11.5px;margin-top:12px;line-height:1.5">
+          Every scenario is validated to trigger a real AgentGuard-X control.
+          <b>LLM03</b> (Training-Data Poisoning) and <b>LLM09</b> (Overreliance) are out of
+          scope for a runtime tool-mediation mesh — they are training-time / human-trust concerns.
+        </div>
       </div>
     </div>
 
@@ -1432,20 +1509,37 @@ async function loadPrometheus() {
 }
 
 // ── Demo scenarios ──
+const OWASP_COLOR = {LLM01:'red',LLM02:'amber',LLM04:'purple',LLM05:'blue',LLM06:'purple',LLM07:'blue',LLM08:'amber',LLM10:'red'};
+const VECTOR_LABEL = {prompt:'prompt scan', tool:'tool pre-hook', tool_chain:'kill chain', output:'output scan', rbac:'RBAC gate'};
+
 async function loadScenarios() {
   try {
     const r = await fetch('/api/demo/scenarios');
     const d = await r.json();
+    const attacks = d.attacks || [];
+
+    // OWASP coverage chips (sorted by OWASP id)
+    const cov = document.getElementById('owasp-coverage');
+    if (cov) {
+      const covered = [...new Set(attacks.map(a => a.owasp))].sort();
+      cov.innerHTML = attacks.slice().sort((a,b)=>a.owasp.localeCompare(b.owasp)).map(s =>
+        `<span class="badge ${OWASP_COLOR[s.owasp]||'muted'}" title="${s.owasp_name} · ${VECTOR_LABEL[s.vector]||s.vector}">${s.owasp} · ${s.owasp_name}</span>`
+      ).join('');
+      const badge = document.getElementById('owasp-coverage-badge');
+      if (badge) badge.textContent = `${covered.length} / 10 categories`;
+    }
+
     const container = document.getElementById('attack-cards');
-    const owaspColor = {LLM01:'red', LLM02:'amber', LLM06:'purple', LLM07:'blue', LLM10:'red'};
-    container.innerHTML = d.attacks.map(s => `
+    container.innerHTML = attacks.map(s => `
       <div class="scenario-card">
         <div class="scenario-meta">
-          <span class="badge ${owaspColor[s.owasp]||'muted'}">${s.owasp}</span>
+          <span class="badge ${OWASP_COLOR[s.owasp]||'muted'}">${s.owasp}</span>
           <span class="badge muted">${s.role}</span>
+          <span class="badge blue">${VECTOR_LABEL[s.vector]||s.vector}</span>
           <span style="font-size:11px;color:var(--muted)">${s.steps} step${s.steps!==1?'s':''}</span>
         </div>
-        <h4>${s.name.replace(/_/g,' ')}</h4>
+        <h4>${s.owasp_name}</h4>
+        <div style="font-size:11px;color:var(--muted);margin:-2px 0 8px"><code>${s.name.replace(/_/g,' ')}</code></div>
         <p>${s.description}</p>
         <button class="btn btn-danger" onclick="runScenario('${s.name}')">▶ Run Attack</button>
       </div>`).join('');
@@ -1471,16 +1565,56 @@ function runScenario(name) {
   const es = new EventSource(`/api/demo/run/${name}?enforcement=${enforcement}`);
   const stepEls = {};
 
+  const metricsEl = document.getElementById('demo-out-metrics');
+  if (metricsEl) metricsEl.textContent = '';
+
   es.onmessage = (evt) => {
     const d = JSON.parse(evt.data);
 
+    // ── Step-less events (handled before the per-step guard) ──
     if (d.type === 'start') {
       stepsDiv.innerHTML = `<div style="padding:10px 0;color:var(--muted);font-size:12px">
-        Session: <code style="color:var(--text)">${d.scenario}</code> &nbsp;|&nbsp;
+        OWASP: <span class="badge ${OWASP_COLOR[d.owasp]||'amber'}">${d.owasp} · ${d.owasp_name||''}</span> &nbsp;|&nbsp;
+        Vector: <span class="badge blue">${VECTOR_LABEL[d.vector]||d.vector||''}</span> &nbsp;|&nbsp;
         Role: <span class="badge muted">${d.role}</span> &nbsp;|&nbsp;
-        OWASP: <span class="badge amber">${d.owasp}</span> &nbsp;|&nbsp;
         Enforcement: <span class="badge ${d.enforcement?'green':'red'}">${d.enforcement?'ON':'OFF'}</span>
       </div>`;
+      return;
+    }
+
+    if (d.type === 'prompt_scan') {
+      const blk = d.blocked;
+      const el = document.createElement('div');
+      el.className = 'demo-step';
+      el.innerHTML = `
+        <div class="step-num ${blk?'blocked':'allowed'}">P</div>
+        <div>
+          <div class="step-tool">prompt pre-scan ${verdictBadge(d.verdict, d.r)}
+            <span class="badge muted">${d.latency_ms}ms</span></div>
+          <div class="step-detail">${blk
+            ? `<span style="color:var(--red)">⊘ ${d.reason || 'Prompt blocked at the door'} ${d.category?('· '+d.category):''}</span>`
+            : `<span style="color:var(--muted)">incoming prompt scanned${d.category?(' · '+d.category):''}</span>`}</div>
+        </div>`;
+      stepsDiv.appendChild(el);
+      return;
+    }
+
+    if (d.type === 'metrics') {
+      if (metricsEl) metricsEl.textContent =
+        `${d.checks} checks · avg ${d.avg_check_ms}ms · max ${d.max_check_ms}ms · ${d.throughput_rps}/s`;
+      return;
+    }
+
+    if (d.type === 'scenario_complete') {
+      badge.classList.add('hidden');
+      const isBlocked = d.outcome === 'BLOCKED';
+      verdictEl.className = 'badge ' + (isBlocked ? 'green' : 'red');
+      verdictEl.textContent = isBlocked
+        ? ('✓ Attack Blocked' + (d.blocked_at ? ' @ ' + d.blocked_at : ''))
+        : '✗ Attack Succeeded';
+      if (metricsEl && d.checks != null) metricsEl.textContent =
+        `${d.checks} checks · avg ${d.avg_check_ms}ms · max ${d.max_check_ms}ms · ${d.throughput_rps}/s`;
+      es.close();
       return;
     }
 
@@ -1499,12 +1633,14 @@ function runScenario(name) {
       return;
     }
 
+    // ── Per-step events ──
     const el = stepEls[d.step];
     if (!el) return;
+    const lat = d.latency_ms != null ? ` <span class="badge muted">${d.latency_ms}ms</span>` : '';
 
     if (d.type === 'step_blocked') {
       el.querySelector('.step-num').className = 'step-num blocked';
-      el.querySelector('.step-tool').innerHTML = `${d.tool} ${verdictBadge(d.verdict, d.r)}`;
+      el.querySelector('.step-tool').innerHTML = `${d.tool} ${verdictBadge(d.verdict, d.r)}${lat}`;
       el.querySelector('.step-detail').innerHTML = `<span style="color:var(--red)">⊘ ${d.reason || 'Blocked by AgentGuard-X'}</span>`;
     } else if (d.type === 'step_quarantined') {
       el.querySelector('.step-num').className = 'step-num quarantined';
@@ -1512,7 +1648,7 @@ function runScenario(name) {
       el.querySelector('.step-detail').innerHTML = `<span style="color:var(--amber)">⚠ Output quarantined: ${(d.findings||[]).join('; ') || 'findings detected'}</span>`;
     } else if (d.type === 'step_allowed') {
       el.querySelector('.step-num').className = 'step-num allowed';
-      el.querySelector('.step-tool').innerHTML = `${d.tool} ${verdictBadge(d.verdict, d.r)}`;
+      el.querySelector('.step-tool').innerHTML = `${d.tool} ${verdictBadge(d.verdict, d.r)}${lat}`;
     } else if (d.type === 'step_executed') {
       el.querySelector('.step-detail').innerHTML += `<br><span style="color:var(--muted);font-size:11px">↳ ${d.output_preview?.slice(0,200)||''}</span>`;
     } else if (d.type === 'kill_chain_stopped') {
@@ -1520,12 +1656,6 @@ function runScenario(name) {
       kc.style.cssText = 'padding:10px 0;border-top:1px solid rgba(239,68,68,.2);margin-top:4px;font-size:12px;color:var(--red);font-weight:600';
       kc.textContent = '⊘ Kill chain stopped at step ' + d.step + ' — remaining steps not executed.';
       stepsDiv.appendChild(kc);
-    } else if (d.type === 'scenario_complete') {
-      badge.classList.add('hidden');
-      const isBlocked = d.outcome === 'BLOCKED';
-      verdictEl.className = 'badge ' + (isBlocked ? 'green' : 'red');
-      verdictEl.textContent = isBlocked ? '✓ Attack Blocked' : '✗ Attack Succeeded';
-      es.close();
     }
   };
 
